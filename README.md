@@ -2,6 +2,16 @@
 
 A command line utility to recover Splunk buckets store in S3
 
+# Isn't there other tools to do this already?
+
+This code implements concurrency and is blazing fast.
+The other tools will perform 600 S3 object restores per minute or 10 per
+second, s2deletemarkers restores 144 objects per second.
+
+For a comparison in a test environment it would take over 30 days to
+restore 1.5M Splunk buckets using the python tool in a continuous run.
+s3deletemarkers will restore in under 40 hours.
+
 # Help
 
 *Get command line help*

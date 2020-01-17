@@ -69,6 +69,7 @@ func GetUsage(args []string) *Runner {
 		Dryrun:     options.Drunrun,
 		Continue:   options.Continue,
 		List:       options.List,
+		Logfile:    options.Logfile,
 	}
 	if options.S3bucket != "" {
 		runner.Region = BucketLocation(options.S3bucket)

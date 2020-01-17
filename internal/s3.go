@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	READPOOL    = iota + 1
+	READPOOL = iota + 1
 	RESTOREPOOL
 )
 
@@ -135,7 +135,9 @@ func (r *S3) RemoveDeleteMarkers(prefixes []string, starttime, endtime time.Time
 		}
 		if r.gracefuldown {
 			r.Wait()
-			r.listFile.Close()
+			if r.listFile != nil {
+				r.listFile.Close()
+			}
 			return
 		}
 		r.waitGroup.Add(1)
@@ -245,5 +247,7 @@ func BucketLocation(bucket string) string {
 }
 
 func (r *S3) End() {
-	r.listFile.Close()
+	if r.listFile != nil {
+		r.listFile.Close()
+	}
 }

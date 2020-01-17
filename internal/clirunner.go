@@ -30,12 +30,13 @@ type Runner struct {
 }
 
 func (r *Runner) Run(trapC <-chan os.Signal) {
+	r.runDatehelp(false)
+
 	Pid = os.Getpid()
 	r.SetupLogging()
 	r.sync = &sync.Mutex{}
 	r.installSigHandlers(trapC)
 
-	r.runDatehelp(false)
 	r.runIndexRecovery(false)
 	r.runPrefixRecovery(false)
 }
@@ -80,7 +81,7 @@ func (r *Runner) SetupLogging() {
 			writer := io.MultiWriter(os.Stdout, file)
 			log.SetOutput(writer)
 		}
-		fmt.Fprintf(os.Stderr,"Logs saved in file %s\n", file.Name())
+		fmt.Fprintf(os.Stderr, "Logs saved in file %s\n", file.Name())
 	}
 }
 
@@ -90,6 +91,7 @@ func (r *Runner) runDatehelp(force bool) {
 	}
 	fmt.Print(`Format examples:
 2006-01-02T15:04:05-0700
+2006-01-02T15:04:05
 2006-01-02
 15:04:05
 15:04

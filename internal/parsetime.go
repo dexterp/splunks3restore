@@ -23,6 +23,9 @@ func _timeparsers() []func(string) (time.Time, error) {
 			return time.Parse("2006-01-02T15:04:05-0700", ts)
 		},
 		func(ts string) (time.Time, error) {
+			return time.Parse("2006-01-02T15:04:05", ts)
+		},
+		func(ts string) (time.Time, error) {
 			return time.Parse("2006-01-02", ts)
 		},
 		func(ts string) (time.Time, error) {

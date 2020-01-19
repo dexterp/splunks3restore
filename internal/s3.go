@@ -138,7 +138,7 @@ func (r *S3) ProcessDeleteMarkers(prefixes []string, starttime, endtime time.Tim
 				log.Printf("restore status=ok batchid=%s pid=%d key=%s\n", batchid, Pid, *marker.Key)
 			}
 			for _, marker := range deleteOutputs.Errors {
-				log.Printf("retore status=fail batchid=%s pid=%d key=%s error=%v\n", batchid, Pid, *marker.Key, err)
+				log.Printf("retore status=fail batchid=%s pid=%d key=%s error=%v\n", batchid, Pid, *marker.Key, *marker.Message)
 			}
 		}
 	}

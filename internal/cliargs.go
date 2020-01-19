@@ -30,7 +30,7 @@ Options:
     -p --prefixfile=<prefixfile>  Load prefixes from a file
     <prefixes>                    list of prefixes (E.G. index names or full paths)
                                   Note that the Stack name is pre-pended to each prefix
-    -t --limit=<actions>          Rate limit AWS client calls to <actions> per second.
+    -t --rate=<actions>           Rate limit AWS client calls to <actions> per second.
                                   -1 will disable rate limiting.
                                   0 will set to the default which is 256.
     -u --logsyslog                Log to syslog

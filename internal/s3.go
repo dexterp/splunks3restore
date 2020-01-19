@@ -124,19 +124,20 @@ func (r *S3) ProcessDeleteMarkers(prefixes []string, starttime, endtime time.Tim
 			}
 			restoreList = append(restoreList, &obj)
 		}
-		_, err = client.DeleteObjects(&s3.DeleteObjectsInput{
+		deleteOutputs, err := client.DeleteObjects(&s3.DeleteObjectsInput{
 			Bucket: &bucket,
 			Delete: &s3.Delete{
 				Objects: restoreList,
 				Quiet:   aws.Bool(false),
 			},
 		})
-		if err == nil {
-			for _, marker := range markers {
+		if err != nil {
+			log.Printf("restore status=err batchid=%s pid=%d msg=\"%v\"", batchid, Pid, err)
+		} else if deleteOutputs != nil {
+			for _, marker := range deleteOutputs.Deleted {
 				log.Printf("restore status=ok batchid=%s pid=%d key=%s\n", batchid, Pid, *marker.Key)
 			}
-		} else {
-			for _, marker := range markers {
+			for _, marker := range deleteOutputs.Errors {
 				log.Printf("retore status=fail batchid=%s pid=%d key=%s error=%v\n", batchid, Pid, *marker.Key, err)
 			}
 		}

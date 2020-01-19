@@ -125,25 +125,21 @@ func (r *S3) ProcessDeleteMarkers(prefixes []string, starttime, endtime time.Tim
 			restoreList = append(restoreList, &obj)
 		}
 		_, err = client.DeleteObjects(&s3.DeleteObjectsInput{
-			Bucket:    &bucket,
+			Bucket: &bucket,
 			Delete: &s3.Delete{
 				Objects: restoreList,
 				Quiet:   aws.Bool(false),
 			},
 		})
-		r.WaitAdd(1)
-		go func() {
-			if err == nil {
-				for _, marker := range markers {
-					log.Printf("restore status=ok batchid=%s pid=%d key=%s\n", batchid, Pid, *marker.Key)
-				}
-			} else {
-				for _, marker := range markers {
-					log.Printf("retore status=fail batchid=%s pid=%d key=%s error=%v\n", batchid, Pid, *marker.Key, err)
-				}
+		if err == nil {
+			for _, marker := range markers {
+				log.Printf("restore status=ok batchid=%s pid=%d key=%s\n", batchid, Pid, *marker.Key)
 			}
-			r.WaitAdd(-1)
-		}()
+		} else {
+			for _, marker := range markers {
+				log.Printf("retore status=fail batchid=%s pid=%d key=%s error=%v\n", batchid, Pid, *marker.Key, err)
+			}
+		}
 	}
 	var actionFunc func(client *s3.S3, bucket string, markers []*s3.DeleteMarkerEntry)
 	switch {

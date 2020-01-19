@@ -3,42 +3,33 @@ package internal
 import (
 	"bufio"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"strings"
 	"sync"
-	"time"
 )
 
 type Runner struct {
-	Fromdate   time.Time
-	Todate     time.Time
-	sync       *sync.Mutex
-	sigTrap    *os.Signal
-	Region     string
-	S3bucket   string
-	Stack      string
-	PrefixList []string
-	PrefixFile string
-	Continue   bool
-	Datehelp   bool
-	Dryrun     bool
-	Syslog     bool
-	Logfile    string
-	List       string
+	Config  *ConfigType
+	sync    *sync.Mutex
+	sigTrap *os.Signal
 }
 
 func (r *Runner) Run(trapC <-chan os.Signal) {
+	r.Setup()
 	r.runDatehelp(false)
 
-	Pid = os.Getpid()
 	r.SetupLogging()
-	r.sync = &sync.Mutex{}
 	r.installSigHandlers(trapC)
 
 	r.runIndexRecovery(false)
 	r.runPrefixRecovery(false)
+}
+
+func (r *Runner) Setup() {
+	Pid = os.Getpid()
+	SetupAWSRateLimit(AWSDefaultRate)
+	r.sync = &sync.Mutex{}
 }
 
 func (r *Runner) installSigHandlers(trapC <-chan os.Signal) {
@@ -46,47 +37,24 @@ func (r *Runner) installSigHandlers(trapC <-chan os.Signal) {
 		sig, _ := <-trapC
 		log.Printf("restore pid=%d msg=\"received %s signal, shutting down\"\n", Pid, sig.String())
 		r.sync.Lock()
-		r.sync.Unlock()
+		defer r.sync.Unlock()
 		r.sigTrap = &sig
 	}()
 }
 
 func (r *Runner) SetupLogging() {
 	switch {
-	case r.Logfile != "":
-		LogToFile(r.Logfile)
-	case r.Syslog:
+	case r.Config.LogFile != "":
+		LogToFile(r.Config.LogFile)
+	case r.Config.Syslog:
 		LogToSyslog("s2deletemarkers")
 	default:
-		t := time.Now()
-		y := t.Format("2006")
-		m := t.Format("01")
-		d := t.Format("02")
-		h := t.Format("15")
-		min := t.Format("04")
-		s := t.Format("05")
-		logfile := fmt.Sprintf("/tmp/s2deletemarker-%s%s%s%s%s%s.log", y, m, d, h, min, s)
-		td := os.Getenv("TMPDIR")
-		if td == "" {
-			td = "/tmp"
-		}
-		file, err := os.OpenFile(logfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			log.Printf("Error opening log file: %v\n", err)
-			Exit(-1)
-		}
-		if r.List != "" {
-			log.SetOutput(file)
-		} else {
-			writer := io.MultiWriter(os.Stdout, file)
-			log.SetOutput(writer)
-		}
-		fmt.Fprintf(os.Stderr, "Logs saved in file %s\n", file.Name())
+		LogDefault(r.Config)
 	}
 }
 
 func (r *Runner) runDatehelp(force bool) {
-	if !r.Datehelp && !force {
+	if !r.Config.DateHelp && !force {
 		return
 	}
 	fmt.Print(`Format examples:
@@ -106,45 +74,29 @@ now-2d-1h-3m
 }
 
 func (r *Runner) runIndexRecovery(force bool) {
-	if len(r.PrefixList) <= 0 && !force {
+	if len(r.Config.PrefixList) <= 0 && !force {
 		return
 	}
-	log.Printf("restore status=start pid=%d\n", Pid)
+	log.Printf("restore status=start pid=%d cli=\"%s\"\n", Pid, Cli2Sting())
 	s3runner := New(
-		r.S3bucket,
-		r.Region,
-		r.Stack,
+		&Config,
 		16,
 		64,
-		false,
-		r.Dryrun,
-		r.List,
 	)
-	s3runner.RemoveDeleteMarkers(r.PrefixList, r.Fromdate, r.Todate)
+	s3runner.ProcessDeleteMarkers(r.Config.PrefixList, r.Config.FromDate, r.Config.ToDate)
 	log.Printf("restore status=end pid=%d\n", Pid)
 	Exit(0)
 }
 
 func (r *Runner) runPrefixRecovery(force bool) {
-	if r.PrefixFile == "" && !force {
+	if r.Config.PrefixFile == "" && !force {
 		return
 	}
-	log.Printf("restore status=start pid=%d\n", Pid)
-	file, err := os.Open(r.PrefixFile)
-	if err != nil {
-		log.Printf("Can not open prefix file %s: %v", r.PrefixFile, err)
-		Exit(-1)
-	}
-	reader := bufio.NewReader(file)
+	log.Printf("restore status=start pid=%d cli=\"%s\"\n", Pid, Cli2Sting())
 	s3runner := New(
-		r.S3bucket,
-		r.Region,
-		r.Stack,
+		&Config,
 		64,
 		64,
-		r.Continue,
-		r.Dryrun,
-		r.List,
 	)
 	buf := []string{}
 	waitFunc := func() {
@@ -153,9 +105,10 @@ func (r *Runner) runPrefixRecovery(force bool) {
 	}
 	fn := func() {
 		r.CheckGracefulShutdown(waitFunc)
-		s3runner.RemoveDeleteMarkers(buf, r.Fromdate, r.Todate)
+		s3runner.ProcessDeleteMarkers(buf, r.Config.FromDate, r.Config.ToDate)
 		buf = []string{}
 	}
+	reader := r.PrefixReader()
 	for {
 		line, err := reader.ReadString('\n')
 		line = strings.Trim(line, "\n")
@@ -165,6 +118,10 @@ func (r *Runner) runPrefixRecovery(force bool) {
 		} else if err != nil {
 			log.Printf("ERROR: %v", err)
 			break
+		}
+		if r.sigTrap != nil {
+			waitFunc()
+			return
 		}
 		buf = append(buf, line)
 		if len(buf) >= 256 {
@@ -176,6 +133,16 @@ func (r *Runner) runPrefixRecovery(force bool) {
 	}
 	log.Printf("restore status=end pid=%d\n", Pid)
 	Exit(0)
+}
+
+func (r *Runner) PrefixReader() *bufio.Reader {
+	file, err := os.Open(r.Config.PrefixFile)
+	if err != nil {
+		log.Printf("Can not open prefix file %s: %v", r.Config.PrefixFile, err)
+		Exit(-1)
+	}
+	reader := bufio.NewReader(file)
+	return reader
 }
 
 func (r *Runner) CheckGracefulShutdown(waitfunc func()) {

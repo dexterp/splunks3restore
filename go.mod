@@ -9,4 +9,5 @@ require (
 	github.com/karrick/tparse v2.4.2+incompatible
 	github.com/stretchr/testify v1.4.0 // indirect
 	golang.org/x/net v0.0.0-20191209160850-c0dbc17a3553 // indirect
+	golang.org/x/time v0.0.0-20191024005414-555d28b269f0
 )

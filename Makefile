@@ -114,7 +114,12 @@ getversion:
 #
 # Helper targets
 #
-_build: $(NAME) dist/linux/$(NAME) dist/darwin/$(NAME)
+_build:
+ifeq ($(XCOMPILE),true)
+	@make dist/linux/$(NAME) dist/darwin/$(NAME)
+else
+	@make $(NAME)
+endif
 
 .PHONY: _install
 _install: $(GOPATH)/bin/$(NAME)

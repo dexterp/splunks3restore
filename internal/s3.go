@@ -1,11 +1,12 @@
 package internal
 
 import (
+	"context"
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"golang.org/x/time/rate"
 	"log"
 	"os"
 	"strings"
@@ -19,53 +20,45 @@ const (
 )
 
 var Pid int
+var AWSRate *rate.Limiter
+
+const AWSDefaultRate = float64(512)
 
 type S3 struct {
-	Bucket             string
-	Stack              string
-	Region             string
-	Continue           bool
-	DryRun             bool
-	gracefuldown       bool
+	Config             *ConfigType
 	Maxreadclients     uint16
 	Maxundeleteclients uint16
 	mu                 *sync.Mutex
 	waitGroup          *sync.WaitGroup
-	contiuationFile    string
-	rmdeletemarkerC    chan *s3.DeleteMarkerEntry
-	inputC             chan *s3.ListObjectVersionsInput
+	RmdeletemarkerC    chan *s3.DeleteMarkerEntry
+	InputC             chan *s3.ListObjectVersionsInput
 	poolids            map[int]int
-	list               string
 	listFile           *os.File
+	gracefuldown       bool
 }
 
-func New(bucket, region, stack string, maxreadclients, maxundeleteclients uint16, cont, dryrun bool, list string) *S3 {
+func New(config *ConfigType, maxreadclients, maxundeleteclients uint16) *S3 {
 	r := S3{
-		Bucket:             bucket,
-		Region:             region,
-		Stack:              stack,
-		Continue:           cont,
-		DryRun:             dryrun,
+		Config:             config,
 		mu:                 &sync.Mutex{},
 		waitGroup:          &sync.WaitGroup{},
 		Maxreadclients:     maxreadclients,
 		Maxundeleteclients: maxundeleteclients,
-		inputC:             make(chan *s3.ListObjectVersionsInput, 256),
-		rmdeletemarkerC:    make(chan *s3.DeleteMarkerEntry, 256),
+		InputC:             make(chan *s3.ListObjectVersionsInput, 256),
+		RmdeletemarkerC:    make(chan *s3.DeleteMarkerEntry, 256),
 		poolids:            map[int]int{},
-		list:               list,
 	}
 	return &r
 }
 
-func (r *S3) RemoveDeleteMarkers(prefixes []string, starttime, endtime time.Time) {
+func (r *S3) ProcessDeleteMarkers(prefixes []string, starttime, endtime time.Time) {
 	readFunc := func(output *s3.ListObjectVersionsOutput, run bool) bool {
 		for _, marker := range output.DeleteMarkers {
 			if !(starttime.Before(*marker.LastModified) && endtime.After(*marker.LastModified) && *marker.IsLatest) {
 				continue
 			}
-			r.waitGroup.Add(1)
-			r.rmdeletemarkerC <- marker
+			r.WaitAdd(1)
+			r.RmdeletemarkerC <- marker
 		}
 		return true
 	}
@@ -76,25 +69,29 @@ func (r *S3) RemoveDeleteMarkers(prefixes []string, starttime, endtime time.Time
 	}
 
 	muList := &sync.Mutex{}
-	if r.list != "" && r.listFile == nil {
+	if r.Config.ListOutput != "" && r.listFile == nil {
 		var err error
-		r.listFile, err = os.OpenFile(r.list, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0644)
+		r.listFile, err = os.OpenFile(r.Config.ListOutput, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Can not open file %s to store bucket list: %v", r.list, err)
+			fmt.Fprintf(os.Stderr, "Can not open file %s to store bucket list: %v", r.Config.ListOutput, err)
 		}
-		fmt.Fprintf(os.Stderr, "Writing s2 bucket list to %s\n", r.list)
+		fmt.Fprintf(os.Stderr, "Writing s2 bucket list to %s\n", r.Config.ListOutput)
 	}
 	listFunc := func(client *s3.S3, bucket string, marker *s3.DeleteMarkerEntry) {
 		muList.Lock()
 		defer muList.Unlock()
-		splunkbucket := strings.TrimPrefix(*marker.Key, r.Stack+"/")
-		_, err := r.listFile.WriteString(splunkbucket + "\n")
-		if err != nil {
-			msg := fmt.Sprintf("Error writing to file %s: %v", r.list, err)
-			fmt.Fprint(os.Stderr, msg+"\n")
-			log.Printf("restore status=error pid=%d bucket=%s msg=\"%s\"", Pid, bucket, msg)
+		listfile := strings.TrimPrefix(*marker.Key, r.Config.S3bucket+"/")
+		if r.listFile != nil {
+			_, err := r.listFile.WriteString(listfile + "\n")
+			if err != nil {
+				msg := fmt.Sprintf("Error writing to file %s: %v", r.Config.ListOutput, err)
+				fmt.Fprint(os.Stderr, msg+"\n")
+				log.Printf("restore status=error pid=%d key=%s msg=\"%s\"", Pid, bucket, msg)
+			}
+		} else {
+			os.Stdout.WriteString(listfile + "\n")
 		}
-		log.Printf("restore status=list pid=%d key=%s\n", Pid, splunkbucket)
+		log.Printf("restore status=list pid=%d key=%s\n", Pid, listfile)
 		return
 	}
 
@@ -113,9 +110,9 @@ func (r *S3) RemoveDeleteMarkers(prefixes []string, starttime, endtime time.Time
 	}
 	var actionFunc func(client *s3.S3, bucket string, marker *s3.DeleteMarkerEntry)
 	switch {
-	case r.DryRun:
+	case r.Config.DryRun:
 		actionFunc = dryRunFunc
-	case r.list != "":
+	case r.Config.RestoreList:
 		actionFunc = listFunc
 	default:
 		actionFunc = restoreFunc
@@ -127,10 +124,10 @@ func (r *S3) RemoveDeleteMarkers(prefixes []string, starttime, endtime time.Time
 		if prefix == "" {
 			continue
 		}
-		prefix := strings.Join([]string{r.Stack, "/", prefix}, "")
+		prefix := strings.Join([]string{r.Config.Stack, "/", prefix}, "")
 
 		input := &s3.ListObjectVersionsInput{
-			Bucket: aws.String(r.Bucket),
+			Bucket: aws.String(r.Config.S3bucket),
 			Prefix: aws.String(prefix),
 		}
 		if r.gracefuldown {
@@ -140,8 +137,8 @@ func (r *S3) RemoveDeleteMarkers(prefixes []string, starttime, endtime time.Time
 			}
 			return
 		}
-		r.waitGroup.Add(1)
-		r.inputC <- input
+		r.WaitAdd(1)
+		r.InputC <- input
 	}
 
 	r.Wait()
@@ -149,6 +146,10 @@ func (r *S3) RemoveDeleteMarkers(prefixes []string, starttime, endtime time.Time
 
 func (r *S3) Wait() {
 	r.waitGroup.Wait()
+}
+
+func (r *S3) WaitAdd(delta int) {
+	r.waitGroup.Add(delta)
 }
 
 func (r *S3) SetGracefulDown() {
@@ -163,14 +164,15 @@ func (s *S3) ListObjectVersionsPool(poolid int, concur uint16, fn func(output *s
 	}
 	s.poolids[poolid] = int(concur)
 	for i := uint16(0); i < concur; i++ {
-		svc := s.GetClient()
-		go deleteMarkerReadWorker(svc, fn, s.inputC, s.waitGroup)
+		go listObjectVersionsWorker(s, fn)
 	}
 }
 
-func deleteMarkerReadWorker(svc *s3.S3, fn func(output *s3.ListObjectVersionsOutput, run bool) bool, jobs <-chan *s3.ListObjectVersionsInput, waitgroup *sync.WaitGroup) {
+func listObjectVersionsWorker(s *S3, fn func(output *s3.ListObjectVersionsOutput, run bool) bool) {
+	svc := s.GetClient()
 	for {
-		input := <-jobs
+		input := <-s.InputC
+		AWSRateLimit()
 		err := svc.ListObjectVersionsPages(
 			input,
 			fn,
@@ -178,7 +180,7 @@ func deleteMarkerReadWorker(svc *s3.S3, fn func(output *s3.ListObjectVersionsOut
 		if err != nil {
 			log.Println(err.Error())
 		}
-		waitgroup.Add(-1)
+		s.WaitAdd(-1)
 	}
 }
 
@@ -193,61 +195,57 @@ func (s *S3) DeleteMarkerPool(poolid int, routines uint16, fn func(*s3.S3, strin
 	}
 	s.poolids[poolid] = int(routines)
 	for i := uint16(0); i < routines; i++ {
-		svc := s.GetClient()
-		go deleteMarkerRemoveWorker(svc, fn, s.Bucket, s.rmdeletemarkerC, s.waitGroup)
+		go deleteMarkerWorker(s, fn)
 	}
 }
 
-func deleteMarkerRemoveWorker(client *s3.S3, fn func(*s3.S3, string, *s3.DeleteMarkerEntry), bucket string, jobs <-chan *s3.DeleteMarkerEntry, waitgroup *sync.WaitGroup) {
+func deleteMarkerWorker(s *S3, fn func(*s3.S3, string, *s3.DeleteMarkerEntry)) {
+	client := s.GetClient()
 	for {
-		marker := <-jobs
-		fn(client, bucket, marker)
-		waitgroup.Add(-1)
+		marker := <-s.RmdeletemarkerC
+		if !s.Config.DryRun && s.Config.ListOutput != "" {
+			AWSRateLimit()
+		}
+		fn(client, s.Config.S3bucket, marker)
+		s.WaitAdd(-1)
 	}
 }
 
 func (r *S3) Session() *session.Session {
+	region := r.Config.GetBucketRegion()
 	config := &aws.Config{
-		Region: aws.String(r.Region),
+		Region: aws.String(region),
 	}
 	sess, _ := session.NewSession(config)
 	return sess
 }
 
-func BucketLocation(bucket string) string {
-	defaultregion := os.Getenv("AWS_DEFAULT_REGION")
-	if defaultregion == "" {
-		defaultregion = "us-east-1"
-	}
-	svc := s3.New(session.New(&aws.Config{
-		Region: aws.String(defaultregion),
-	}))
-	input := &s3.GetBucketLocationInput{
-		Bucket: aws.String(bucket),
-	}
-
-	result, err := svc.GetBucketLocation(input)
-	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok {
-			switch aerr.Code() {
-			default:
-				fmt.Fprintf(os.Stderr, "Error while getting Bucket location for \"%s\": %v\n", bucket, aerr.Error())
-			}
-		} else {
-			fmt.Fprintf(os.Stderr, "Error while getting Bucket location for \"%s\": %v\n", bucket, aerr.Error())
-		}
-		Exit(-1)
-	}
-	if result == nil {
-		fmt.Fprintf(os.Stderr, "Error while getting Bucket location for \"%s\": No results returned\n", bucket)
-		Exit(-1)
-	}
-	region := *result.LocationConstraint
-	return region
-}
-
 func (r *S3) End() {
 	if r.listFile != nil {
 		r.listFile.Close()
+	}
+}
+
+func AWSRateLimit() {
+	if AWSRate != nil {
+		err := AWSRate.Wait(context.TODO())
+		if err != nil {
+			log.Println(err.Error())
+		}
+	}
+}
+
+func SetupAWSRateLimit(defaultrate float64) {
+	if AWSRate == nil {
+		var l float64
+		switch {
+		case Config.RateLimit < 0:
+			AWSRate = nil
+		case Config.RateLimit == 0:
+			l = defaultrate
+		default:
+			l = Config.RateLimit
+		}
+		AWSRate = rate.NewLimiter(rate.Limit(l), 512)
 	}
 }

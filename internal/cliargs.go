@@ -25,7 +25,7 @@ Options:
     -d --dryrun                   Run in simulation. Log entries will have a status=dryrun.
     -s --start=<sdate>            Starting date
     -e --end=<edate>              End date
-    -l --output=<listfile>        ListOutput buckets only and write to <listfile>
+    -l --output=<listfile>        Write bucket list to <listfile>
     -r --region=<region>          Set AWS Region
     -p --prefixfile=<prefixfile>  Load prefixes from a file
     <prefixes>                    list of prefixes (E.G. index names or full paths)

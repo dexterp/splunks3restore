@@ -6,8 +6,10 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/google/uuid"
 	"golang.org/x/time/rate"
 	"log"
+	"math/rand"
 	"os"
 	"strings"
 	"sync"
@@ -30,7 +32,7 @@ type S3 struct {
 	Maxundeleteclients uint16
 	mu                 *sync.Mutex
 	waitGroup          *sync.WaitGroup
-	RmdeletemarkerC    chan *s3.DeleteMarkerEntry
+	RmdeletemarkerC    chan []*s3.DeleteMarkerEntry
 	InputC             chan *s3.ListObjectVersionsInput
 	poolids            map[int]int
 	listFile           *os.File
@@ -45,7 +47,7 @@ func New(config *ConfigType, maxreadclients, maxundeleteclients uint16) *S3 {
 		Maxreadclients:     maxreadclients,
 		Maxundeleteclients: maxundeleteclients,
 		InputC:             make(chan *s3.ListObjectVersionsInput, 256),
-		RmdeletemarkerC:    make(chan *s3.DeleteMarkerEntry, 256),
+		RmdeletemarkerC:    make(chan []*s3.DeleteMarkerEntry, 256),
 		poolids:            map[int]int{},
 	}
 	return &r
@@ -53,18 +55,33 @@ func New(config *ConfigType, maxreadclients, maxundeleteclients uint16) *S3 {
 
 func (r *S3) ProcessDeleteMarkers(prefixes []string, starttime, endtime time.Time) {
 	readFunc := func(output *s3.ListObjectVersionsOutput, run bool) bool {
+		markers := []*s3.DeleteMarkerEntry{}
+		cnt := 0
 		for _, marker := range output.DeleteMarkers {
 			if !(starttime.Before(*marker.LastModified) && endtime.After(*marker.LastModified) && *marker.IsLatest) {
 				continue
 			}
+
+			markers = append(markers, marker)
+			cnt++
+			if cnt == 1000 {
+				r.WaitAdd(1)
+				r.RmdeletemarkerC <- markers
+				markers = []*s3.DeleteMarkerEntry{}
+			}
+		}
+		if len(markers) > 0 {
 			r.WaitAdd(1)
-			r.RmdeletemarkerC <- marker
+			r.RmdeletemarkerC <- markers
 		}
 		return true
 	}
 
-	dryRunFunc := func(client *s3.S3, bucket string, marker *s3.DeleteMarkerEntry) {
-		log.Printf("restore status=dryrun pid=%d key=%s\n", Pid, *marker.Key)
+	dryRunFunc := func(client *s3.S3, bucket string, markers []*s3.DeleteMarkerEntry) {
+		batchid := genuuid()
+		for _, marker := range markers {
+			log.Printf("restore status=dryrun batchid=%s pid=%d key=%s\n", batchid, Pid, *marker.Key)
+		}
 		return
 	}
 
@@ -77,38 +94,58 @@ func (r *S3) ProcessDeleteMarkers(prefixes []string, starttime, endtime time.Tim
 		}
 		fmt.Fprintf(os.Stderr, "Writing s2 bucket list to %s\n", r.Config.ListOutput)
 	}
-	listFunc := func(client *s3.S3, bucket string, marker *s3.DeleteMarkerEntry) {
+	listFunc := func(client *s3.S3, bucket string, markers []*s3.DeleteMarkerEntry) {
+		batchid := genuuid()
 		muList.Lock()
 		defer muList.Unlock()
-		listfile := strings.TrimPrefix(*marker.Key, r.Config.S3bucket+"/")
-		if r.listFile != nil {
-			_, err := r.listFile.WriteString(listfile + "\n")
-			if err != nil {
-				msg := fmt.Sprintf("Error writing to file %s: %v", r.Config.ListOutput, err)
-				fmt.Fprint(os.Stderr, msg+"\n")
-				log.Printf("restore status=error pid=%d key=%s msg=\"%s\"", Pid, bucket, msg)
+		for _, marker := range markers {
+			listfile := strings.TrimPrefix(*marker.Key, r.Config.S3bucket+"/")
+			if r.listFile != nil {
+				r.listFile.WriteString(listfile + "\n")
+			} else {
+				os.Stdout.WriteString(listfile + "\n")
 			}
-		} else {
-			os.Stdout.WriteString(listfile + "\n")
+			log.Printf("restore status=list batchid=%s pid=%d key=%s\n", batchid, Pid, *marker.Key)
 		}
-		log.Printf("restore status=list pid=%d key=%s\n", Pid, listfile)
 		return
 	}
 
-	restoreFunc := func(client *s3.S3, bucket string, marker *s3.DeleteMarkerEntry) {
-		var err error
-		_, err = client.DeleteObject(&s3.DeleteObjectInput{
-			Bucket:    &bucket,
-			Key:       marker.Key,
-			VersionId: marker.VersionId,
-		})
-		if err == nil {
-			log.Printf("restore status=ok pid=%d key=%s\n", Pid, *marker.Key)
-		} else {
-			log.Printf("retore status=fail pid=%d key=%s error=%s", Pid, *marker.Key, err.Error())
+	restoreFunc := func(client *s3.S3, bucket string, markers []*s3.DeleteMarkerEntry) {
+		if len(markers) == 0 {
+			return
 		}
+		var err error
+		restoreList := []*s3.ObjectIdentifier{}
+		batchid := genuuid()
+		for _, marker := range markers {
+			obj := s3.ObjectIdentifier{
+				Key:       marker.Key,
+				VersionId: marker.VersionId,
+			}
+			restoreList = append(restoreList, &obj)
+		}
+		_, err = client.DeleteObjects(&s3.DeleteObjectsInput{
+			Bucket:    &bucket,
+			Delete: &s3.Delete{
+				Objects: restoreList,
+				Quiet:   aws.Bool(false),
+			},
+		})
+		r.WaitAdd(1)
+		go func() {
+			if err == nil {
+				for _, marker := range markers {
+					log.Printf("restore status=ok batchid=%s pid=%d key=%s\n", batchid, Pid, *marker.Key)
+				}
+			} else {
+				for _, marker := range markers {
+					log.Printf("retore status=fail batchid=%s pid=%d key=%s error=%v\n", batchid, Pid, *marker.Key, err)
+				}
+			}
+			r.WaitAdd(-1)
+		}()
 	}
-	var actionFunc func(client *s3.S3, bucket string, marker *s3.DeleteMarkerEntry)
+	var actionFunc func(client *s3.S3, bucket string, markers []*s3.DeleteMarkerEntry)
 	switch {
 	case r.Config.DryRun:
 		actionFunc = dryRunFunc
@@ -189,7 +226,7 @@ func (r *S3) GetClient() *s3.S3 {
 	return svc
 }
 
-func (s *S3) DeleteMarkerPool(poolid int, routines uint16, fn func(*s3.S3, string, *s3.DeleteMarkerEntry)) {
+func (s *S3) DeleteMarkerPool(poolid int, routines uint16, fn func(*s3.S3, string, []*s3.DeleteMarkerEntry)) {
 	if _, ok := s.poolids[poolid]; ok {
 		return // Pool already created
 	}
@@ -203,7 +240,7 @@ func (s *S3) DeleteMarkerPool(poolid int, routines uint16, fn func(*s3.S3, strin
 	}
 }
 
-func deleteMarkerWorker(s *S3, fn func(*s3.S3, string, *s3.DeleteMarkerEntry), rateLimitFn func()) {
+func deleteMarkerWorker(s *S3, fn func(*s3.S3, string, []*s3.DeleteMarkerEntry), rateLimitFn func()) {
 	client := s.GetClient()
 	for {
 		marker := <-s.RmdeletemarkerC
@@ -250,4 +287,10 @@ func SetupAWSRateLimit(defaultrate float64) {
 		}
 		AWSRate = rate.NewLimiter(rate.Limit(l), 512)
 	}
+}
+
+func genuuid() string {
+	rand.Seed(time.Now().UnixNano())
+	u := uuid.New()
+	return u.String()
 }

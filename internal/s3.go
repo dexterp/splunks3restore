@@ -194,18 +194,20 @@ func (s *S3) DeleteMarkerPool(poolid int, routines uint16, fn func(*s3.S3, strin
 		return // Pool already created
 	}
 	s.poolids[poolid] = int(routines)
+	rateFn := func() { /* noop */ }
+	if !s.Config.DryRun && !s.Config.RestoreList {
+		rateFn = AWSRateLimit
+	}
 	for i := uint16(0); i < routines; i++ {
-		go deleteMarkerWorker(s, fn)
+		go deleteMarkerWorker(s, fn, rateFn)
 	}
 }
 
-func deleteMarkerWorker(s *S3, fn func(*s3.S3, string, *s3.DeleteMarkerEntry)) {
+func deleteMarkerWorker(s *S3, fn func(*s3.S3, string, *s3.DeleteMarkerEntry), rateLimitFn func()) {
 	client := s.GetClient()
 	for {
 		marker := <-s.RmdeletemarkerC
-		if !s.Config.DryRun && s.Config.ListOutput != "" {
-			AWSRateLimit()
-		}
+		rateLimitFn()
 		fn(client, s.Config.S3bucket, marker)
 		s.WaitAdd(-1)
 	}

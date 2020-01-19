@@ -22,7 +22,7 @@ const (
 var Pid int
 var AWSRate *rate.Limiter
 
-const AWSDefaultRate = float64(512)
+const AWSDefaultRate = float64(256)
 
 type S3 struct {
 	Config             *ConfigType

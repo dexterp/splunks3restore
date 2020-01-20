@@ -131,11 +131,7 @@ func (r *S3) ProcessDeleteMarkers(prefixes []string, starttime, endtime time.Tim
 				Quiet:   aws.Bool(false),
 			},
 		})
-		r.WaitAdd(1)
-		waitFn := func() {
-			r.WaitAdd(-1)
-		}
-		go r.logDeleteResults(err, batchid, deleteOutputs, waitFn)
+		r.logRestoreResults(err, batchid, deleteOutputs)
 	}
 	var actionFunc func(client *s3.S3, bucket string, markers []*s3.DeleteMarkerEntry)
 	switch {
@@ -173,19 +169,22 @@ func (r *S3) ProcessDeleteMarkers(prefixes []string, starttime, endtime time.Tim
 	r.Wait()
 }
 
-func (r *S3) logDeleteResults(err error, batchid string, deleteOutputs *s3.DeleteObjectsOutput, waitFn func()) {
-	if err != nil {
-		log.Printf("restore status=err batchid=%s pid=%d msg=\"%v\"", batchid, Pid, err)
-	}
-	if deleteOutputs != nil {
-		for _, marker := range deleteOutputs.Deleted {
-			log.Printf("restore status=ok batchid=%s pid=%d key=%s\n", batchid, Pid, *marker.Key)
+func (r *S3) logRestoreResults(err error, batchid string, deleteOutputs *s3.DeleteObjectsOutput) {
+	r.WaitAdd(1)
+	go func() {
+		if err != nil {
+			log.Printf("restore status=err batchid=%s pid=%d msg=\"%v\"", batchid, Pid, err)
 		}
-		for _, marker := range deleteOutputs.Errors {
-			log.Printf("retore status=fail batchid=%s pid=%d key=%s error=%v\n", batchid, Pid, *marker.Key, *marker.Message)
+		if deleteOutputs != nil {
+			for _, marker := range deleteOutputs.Deleted {
+				log.Printf("restore status=ok batchid=%s pid=%d key=%s\n", batchid, Pid, *marker.Key)
+			}
+			for _, marker := range deleteOutputs.Errors {
+				log.Printf("retore status=fail batchid=%s pid=%d key=%s error=%v\n", batchid, Pid, *marker.Key, *marker.Message)
+			}
 		}
-	}
-	waitFn()
+	}()
+	r.WaitAdd(-1)
 }
 
 func (r *S3) Wait() {

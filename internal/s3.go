@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/google/uuid"
@@ -46,41 +47,74 @@ func New(config *ConfigType, maxreadclients, maxundeleteclients uint16) *S3 {
 		waitGroup:          &sync.WaitGroup{},
 		Maxreadclients:     maxreadclients,
 		Maxundeleteclients: maxundeleteclients,
-		InputC:             make(chan *s3.ListObjectVersionsInput, 256),
-		RmdeletemarkerC:    make(chan []*s3.DeleteMarkerEntry, 256),
+		InputC:             make(chan *s3.ListObjectVersionsInput, 4096),
+		RmdeletemarkerC:    make(chan []*s3.DeleteMarkerEntry, 4096),
 		poolids:            map[int]int{},
 	}
 	return &r
 }
 
 func (r *S3) ProcessDeleteMarkers(prefixes []string, starttime, endtime time.Time) {
+	// Scan Functions
+	readLogVersionFunc := func(output *s3.ListObjectVersionsOutput, run bool) bool {
+		entries := []*logVersionEntry{}
+		entries = appendObjectVersionEntries("audit", entries, output.Versions)
+		entries = appendDeleteMarkerEntries("audit", entries, output.DeleteMarkers)
+		logVersions(entries, r.waitGroup)
+		return true
+	}
 	readFunc := func(output *s3.ListObjectVersionsOutput, run bool) bool {
 		markers := []*s3.DeleteMarkerEntry{}
+		logEntries := []*logVersionEntry{}
 		cnt := 0
 		for _, marker := range output.DeleteMarkers {
 			if !(starttime.Before(*marker.LastModified) && endtime.After(*marker.LastModified) && *marker.IsLatest) {
+				if r.Config.Verbose {
+					logEntries = appendDeleteMarkerEntries("skip", logEntries, []*s3.DeleteMarkerEntry{marker})
+				}
 				continue
 			}
 
 			markers = append(markers, marker)
+			if r.Config.Verbose {
+				logEntries = appendDeleteMarkerEntries("submit", logEntries, markers)
+			}
 			cnt++
 			if cnt == 1000 {
 				r.WaitAdd(1)
 				r.RmdeletemarkerC <- markers
+				if r.Config.Verbose {
+					logVersions(logEntries, r.waitGroup)
+					logEntries = []*logVersionEntry{}
+				}
 				markers = []*s3.DeleteMarkerEntry{}
 			}
 		}
 		if len(markers) > 0 {
 			r.WaitAdd(1)
 			r.RmdeletemarkerC <- markers
+			if r.Config.Verbose {
+				logVersions(logEntries, r.waitGroup)
+			}
 		}
 		return true
+	}
+
+	// Action Functions
+	nilActionFunc := func(client *s3.S3, bucket string, markers []*s3.DeleteMarkerEntry) {
 	}
 
 	dryRunFunc := func(client *s3.S3, bucket string, markers []*s3.DeleteMarkerEntry) {
 		batchid := genuuid()
 		for _, marker := range markers {
-			log.Printf("restore status=dryrun batchid=%s pid=%d key=%s\n", batchid, Pid, *marker.Key)
+			log.Printf(
+				"restore status=dryrun batchid=%s pid=%d key=%s version=%s lastmodified=\"%s\"\n",
+				batchid,
+				Pid,
+				*marker.Key,
+				*marker.VersionId,
+				*marker.LastModified,
+			)
 		}
 		return
 	}
@@ -133,16 +167,23 @@ func (r *S3) ProcessDeleteMarkers(prefixes []string, starttime, endtime time.Tim
 		})
 		r.logRestoreResults(err, batchid, deleteOutputs)
 	}
+	var scanFunc func(output *s3.ListObjectVersionsOutput, run bool) bool
 	var actionFunc func(client *s3.S3, bucket string, markers []*s3.DeleteMarkerEntry)
 	switch {
+	case r.Config.Audit:
+		scanFunc = readLogVersionFunc
+		actionFunc = nilActionFunc
 	case r.Config.DryRun:
+		scanFunc = readFunc
 		actionFunc = dryRunFunc
 	case r.Config.RestoreList:
+		scanFunc = readFunc
 		actionFunc = listFunc
 	default:
+		scanFunc = readFunc
 		actionFunc = restoreFunc
 	}
-	r.ListObjectVersionsPool(READPOOL, r.Maxreadclients, readFunc)
+	r.ListObjectVersionsPool(READPOOL, r.Maxreadclients, scanFunc)
 	r.DeleteMarkerPool(RESTOREPOOL, r.Maxundeleteclients, actionFunc)
 
 	for _, prefix := range prefixes {
@@ -164,6 +205,9 @@ func (r *S3) ProcessDeleteMarkers(prefixes []string, starttime, endtime time.Tim
 		}
 		r.WaitAdd(1)
 		r.InputC <- input
+		if r.Config.Verbose || r.Config.Audit {
+			log.Printf("restore status=submit bucket=%s perfix=%s", r.Config.S3bucket, prefix)
+		}
 	}
 
 	r.Wait()
@@ -177,10 +221,12 @@ func (r *S3) logRestoreResults(err error, batchid string, deleteOutputs *s3.Dele
 		}
 		if deleteOutputs != nil {
 			for _, marker := range deleteOutputs.Deleted {
-				log.Printf("restore status=ok batchid=%s pid=%d key=%s\n", batchid, Pid, *marker.Key)
+				log.Printf("restore status=ok batchid=%s pid=%d key=%s version=%s\n",
+					batchid, Pid, *marker.Key, *marker.VersionId)
 			}
 			for _, marker := range deleteOutputs.Errors {
-				log.Printf("retore status=fail batchid=%s pid=%d key=%s error=%v\n", batchid, Pid, *marker.Key, *marker.Message)
+				log.Printf("retore status=fail batchid=%s pid=%d key=%s version=%s error=%v\n",
+					batchid, Pid, *marker.Key, *marker.VersionId, *marker.Message)
 			}
 		}
 	}()
@@ -215,7 +261,6 @@ func listObjectVersionsWorker(s *S3, fn func(output *s3.ListObjectVersionsOutput
 	svc := s.GetClient()
 	for {
 		input := <-s.InputC
-		AWSRateLimit()
 		err := svc.ListObjectVersionsPages(
 			input,
 			fn,
@@ -229,6 +274,9 @@ func listObjectVersionsWorker(s *S3, fn func(output *s3.ListObjectVersionsOutput
 
 func (r *S3) GetClient() *s3.S3 {
 	svc := s3.New(r.Session())
+	svc.Handlers.Send.PushBack(func(r *request.Request) {
+		AWSRateLimit()
+	})
 	return svc
 }
 
@@ -237,20 +285,15 @@ func (s *S3) DeleteMarkerPool(poolid int, routines uint16, fn func(*s3.S3, strin
 		return // Pool already created
 	}
 	s.poolids[poolid] = int(routines)
-	rateFn := func() { /* noop */ }
-	if !s.Config.DryRun && !s.Config.RestoreList {
-		rateFn = AWSRateLimit
-	}
 	for i := uint16(0); i < routines; i++ {
-		go deleteMarkerWorker(s, fn, rateFn)
+		go deleteMarkerWorker(s, fn)
 	}
 }
 
-func deleteMarkerWorker(s *S3, fn func(*s3.S3, string, []*s3.DeleteMarkerEntry), rateLimitFn func()) {
+func deleteMarkerWorker(s *S3, fn func(*s3.S3, string, []*s3.DeleteMarkerEntry)) {
 	client := s.GetClient()
 	for {
 		marker := <-s.RmdeletemarkerC
-		rateLimitFn()
 		fn(client, s.Config.S3bucket, marker)
 		s.WaitAdd(-1)
 	}

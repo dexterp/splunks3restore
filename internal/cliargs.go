@@ -12,8 +12,10 @@ import (
 var Usage = `Remove Smart Store S3 delete markers
 
 Usage:
-    s2deletemarkers restore [--dryrun] [--log=<logfile>] [--logsyslog] [--rate=<actions>] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> <stack> <prefixes>...
-    s2deletemarkers restore [--dryrun] [--log=<logfile>] [--logsyslog] [--rate=<actions>] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> --prefixfile=<prefixfile> <stack>
+    s2deletemarkers restore [--dryrun] [--verbose] [--log=<logfile>] [--logsyslog] [--rate=<actions>] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> <stack> <prefixes>...
+    s2deletemarkers restore [--dryrun] [--verbose] [--log=<logfile>] [--logsyslog] [--rate=<actions>] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> --prefixfile=<prefixfile> <stack>
+    s2deletemarkers audit [--log=<logfile>] [--logsyslog] [--rate=<actions>] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> <stack> <prefixes>...
+    s2deletemarkers audit [--log=<logfile>] [--logsyslog] [--rate=<actions>] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> --prefixfile=<prefixfile> <stack>
     s2deletemarkers list [--log=<logfile>] [--logsyslog] [--rate=<actions] [--output=<listfile>] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> <stack> <prefixes>...
     s2deletemarkers list [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--output=<listfile>] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> --prefixfile=<prefixfile> <stack>
     s2deletemarkers --dateformat
@@ -35,9 +37,11 @@ Options:
                                   0 will set to the default which is 256.
     -u --logsyslog                Log to syslog
     -x --log=<logfile>            Log to a logfile
+    -b --verbose                  Verbose logs
 `
 
 type OptUsage struct {
+	Audit       bool     `docopt:"audit"`
 	Restore     bool     `docopt:"restore"`
 	RestoreList bool     `docopt:"list"`
 	Fromdate    string   `docopt:"--start"`
@@ -53,6 +57,7 @@ type OptUsage struct {
 	Logfile     string   `docopt:"--log"`
 	ListOutput  string   `docopt:"--output"`
 	RateLimit   float64  `docopt:"--rate"`
+	Verbose     bool     `dcopt:"--verbose"`
 }
 
 func GetUsage(args []string) *Runner {

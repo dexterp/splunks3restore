@@ -13,6 +13,8 @@ import (
 var Config = ConfigType{}
 
 type ConfigType struct {
+	Verbose         bool
+	Audit           bool
 	Restore         bool
 	RestoreList     bool
 	RestoreListFile string
@@ -41,6 +43,8 @@ func (c *ConfigType) Load(opts *OptUsage) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Unrecognised <todate> format %s", opts.Todate)
 	}
+	c.Audit = opts.Audit
+	c.Verbose = opts.Verbose
 	c.Restore = opts.Restore
 	c.FromDate = from
 	c.ToDate = to

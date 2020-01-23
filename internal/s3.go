@@ -80,7 +80,7 @@ func (r *S3) ProcessDeleteMarkers(prefixes []string, starttime, endtime time.Tim
 				logEntries = appendDeleteMarkerEntries("submit", logEntries, markers)
 			}
 			cnt++
-			if cnt == 1000 {
+			if cnt == 512 {
 				r.WaitAdd(1)
 				r.RmdeletemarkerC <- markers
 				if r.Config.Verbose {

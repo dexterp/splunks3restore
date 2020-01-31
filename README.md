@@ -6,11 +6,13 @@ A command line utility to recover Splunk buckets store in S3
 
 This code implements concurrency and is blazing fast.
 The other tools will perform 600 S3 object restores per minute or 10 per
-second, s2deletemarkers restores 144 objects per second.
+second, s2deletemarkers is capable of restores of over 1000 objects per
+second. Note that by default the tool is rate limited to 256 S3 calls
+per second, rate limiting is crolled by the --rate=<rate> flag.
 
 For a comparison in a test environment it would take over 30 days to
 restore 1.5M Splunk buckets using the python tool in a continuous run.
-s3deletemarkers will restore in under 40 hours.
+s3deletemarkers will restore in under 5 hours.
 
 # Help
 

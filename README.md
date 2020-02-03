@@ -12,7 +12,7 @@ per second, rate limiting is crolled by the --rate=<rate> flag.
 
 For a comparison in a test environment it would take over 30 days to
 restore 1.5M Splunk buckets using the python tool in a continuous run.
-s3deletemarkers will restore in under 5 hours.
+s3deletemarkers scanned and restored 1.5M in under 5 hours.
 
 # Help
 
@@ -30,15 +30,15 @@ s2deletemarkers --dateformat
 
 *Recover _internal and _audit indexes from between 7 & 6 days ago*
 ```bash
-s2deletemarkers --s3bucket=s3bucket --start=-7d --end=-6d mystack _internal _audit
+s2deletemarkers restore --s3bucket=s3bucket --start=-7d --end=-6d mystack _internal _audit
 ```
 
 *Restore buckets from an input list*
 ```bash
-s2deletemarkers --s3bucket s3-bucket --start -7d --end now --prefixfile=inputlist.txt stack
+s2deletemarkers restore --s3bucket s3-bucket --start -7d --end now --prefixfile=inputlist.txt stack
 ```
 
 *Instead of restoring, get a list of Splunk buckets using a prefix file and save to splunkbuckets.txt*
 ```bash
-s2deletemarkers --s3bucket s3-bucket --start -7d --end now --list=splunkbuckets.txt --prefixfile=inputlist.txt stack
+s2deletemarkers restore --s3bucket s3-bucket --start -7d --end now --list=splunkbuckets.txt --prefixfile=inputlist.txt stack
 ```

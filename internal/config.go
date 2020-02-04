@@ -6,32 +6,36 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"io/ioutil"
+	"log"
 	"os"
 	"time"
 )
 
 var Config = ConfigType{}
+var State = StateStruct{}
 
 type ConfigType struct {
-	Verbose         bool
-	Audit           bool
-	Restore         bool
-	RestoreList     bool
-	RestoreListFile string
 	FromDate        time.Time
 	ToDate          time.Time
+	ListOutput      string
+	LogFile         string
+	PrefixFile      string
+	RestoreListFile string
 	S3bucket        string
 	Stack           string
+	bucketRegion    string
 	PrefixList      []string
-	PrefixFile      string
+	Audit           bool
 	Continue        bool
 	DateHelp        bool
 	DryRun          bool
+	Fixup           bool
+	Restore         bool
+	ListVer         bool
 	Syslog          bool
-	LogFile         string
-	ListOutput      string
+	Verbose         bool
 	RateLimit       float64
-	bucketRegion    string
 }
 
 func (c *ConfigType) Load(opts *OptUsage) {
@@ -44,22 +48,23 @@ func (c *ConfigType) Load(opts *OptUsage) {
 		fmt.Fprintf(os.Stderr, "Unrecognised <todate> format %s", opts.Todate)
 	}
 	c.Audit = opts.Audit
-	c.Verbose = opts.Verbose
-	c.Restore = opts.Restore
-	c.FromDate = from
-	c.ToDate = to
-	c.S3bucket = opts.S3bucket
-	c.Stack = opts.Stack
-	c.PrefixList = opts.PrefixList
-	c.PrefixFile = opts.PrefixFile
+	c.Continue = opts.Continue
 	c.Continue = opts.Continue
 	c.DateHelp = opts.Datehelp
 	c.DryRun = opts.DryRun
-	c.Continue = opts.Continue
-	c.LogFile = opts.Logfile
-	c.RestoreList = opts.RestoreList
+	c.Fixup = opts.Fixup
+	c.FromDate = from
+	c.ListVer = opts.ListVer
 	c.ListOutput = opts.ListOutput
+	c.LogFile = opts.Logfile
+	c.PrefixFile = opts.PrefixFile
+	c.PrefixList = opts.PrefixList
 	c.RateLimit = opts.RateLimit
+	c.Restore = opts.Restore
+	c.S3bucket = opts.S3bucket
+	c.Stack = opts.Stack
+	c.ToDate = to
+	c.Verbose = opts.Verbose
 }
 
 func (c *ConfigType) GetBucketRegion() string {
@@ -95,4 +100,35 @@ func (c *ConfigType) GetBucketRegion() string {
 	}
 	c.bucketRegion = *result.LocationConstraint
 	return c.bucketRegion
+}
+
+type StateStruct struct {
+	pid     int
+	tempdir string
+}
+
+func (s *StateStruct) Pid() int {
+	if s.pid > 0 {
+		return s.pid
+	}
+	s.pid = os.Getpid()
+	return s.pid
+}
+
+// TempDir returns path to a temporary directory
+func (s *StateStruct) TempDir() string {
+	if s.tempdir != "" {
+		return s.tempdir
+	}
+	tmpdir := os.Getenv("TEMP")
+	if tmpdir == "" {
+		tmpdir = "/tmp"
+	}
+	dir, err := ioutil.TempDir(tmpdir, "s2deletemarkers")
+	if err != nil {
+		log.Print(err)
+		Exit(-1)
+	}
+	s.tempdir = dir
+	return s.tempdir
 }

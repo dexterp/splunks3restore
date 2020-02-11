@@ -15,6 +15,7 @@ import (
 )
 
 func LogToSyslog(tag string) {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	logwriter, e := syslog.New(syslog.LOG_NOTICE, tag)
 	if e == nil {
 		log.SetOutput(logwriter)
@@ -22,6 +23,7 @@ func LogToSyslog(tag string) {
 }
 
 func LogToFile(lname string) {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	info, err := os.Stat(lname)
 	if err != nil && !os.IsNotExist(err) {
 		log.Println(err)
@@ -43,10 +45,11 @@ func LogToFile(lname string) {
 }
 
 func LogDefault(c *ConfigType) {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	logfile := logName()
 	td := os.Getenv("TMPDIR")
 	if td == "" {
-		td = "/tmp"
+		td = "/tempdir"
 	}
 	logfile = path.Join(td, logfile)
 	file, err := os.OpenFile(logfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
@@ -56,7 +59,7 @@ func LogDefault(c *ConfigType) {
 	}
 	var writer io.Writer
 	switch {
-	case c.RestoreList:
+	case c.ListVer:
 		writer = file
 	default:
 		writer = io.MultiWriter(os.Stderr, file)
@@ -77,7 +80,7 @@ func logName() string {
 	return logfile
 }
 
-type sortByLogVersionEntry []*logVersionEntry
+type sortByLogVersionEntry []*LogVersionEntry
 
 func (s sortByLogVersionEntry) Len() int {
 	return len(s)
@@ -94,7 +97,7 @@ func (s sortByLogVersionEntry) Less(i, j int) bool {
 	return s[i].lastmodified.Before(*s[j].lastmodified)
 }
 
-type logVersionEntry struct {
+type LogVersionEntry struct {
 	status         string
 	key            string
 	versionid      string
@@ -103,9 +106,9 @@ type logVersionEntry struct {
 	isdeletemarker bool
 }
 
-func appendDeleteMarkerEntries(status string, entries []*logVersionEntry, markers []*s3.DeleteMarkerEntry) []*logVersionEntry {
+func AppendDeleteMarkerEntries(status string, entries []*LogVersionEntry, markers []*s3.DeleteMarkerEntry) []*LogVersionEntry {
 	for _, marker := range markers {
-		entries = append(entries, &logVersionEntry{
+		entries = append(entries, &LogVersionEntry{
 			status:         status,
 			key:            *marker.Key,
 			versionid:      *marker.VersionId,
@@ -118,9 +121,9 @@ func appendDeleteMarkerEntries(status string, entries []*logVersionEntry, marker
 	return entries
 }
 
-func appendObjectVersionEntries(status string, entries []*logVersionEntry, objects []*s3.ObjectVersion) []*logVersionEntry {
+func AppendObjectVersionEntries(status string, entries []*LogVersionEntry, objects []*s3.ObjectVersion) []*LogVersionEntry {
 	for _, obj := range objects {
-		entries = append(entries, &logVersionEntry{
+		entries = append(entries, &LogVersionEntry{
 			status:         status,
 			key:            *obj.Key,
 			versionid:      *obj.VersionId,
@@ -133,7 +136,7 @@ func appendObjectVersionEntries(status string, entries []*logVersionEntry, objec
 	return entries
 }
 
-func logVersions(entries []*logVersionEntry, wg *sync.WaitGroup) {
+func LogVersions(entries []*LogVersionEntry, wg *sync.WaitGroup) {
 	WaitFunc(
 		func() {
 			for _, entry := range entries {

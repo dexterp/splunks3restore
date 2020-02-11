@@ -1,157 +1,187 @@
 package internal
 
 import (
-	"context"
+	"bytes"
+	"cd.splunkdev.com/dplameras/s2deletemarkers/internal/receipt"
+	"cd.splunkdev.com/dplameras/s2deletemarkers/internal/routines"
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/google/uuid"
-	"golang.org/x/time/rate"
+	"io"
 	"log"
-	"math/rand"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 )
 
-const (
-	READPOOL = iota + 1
-	RESTOREPOOL
-)
-
-var Pid int
-var AWSRate *rate.Limiter
-
-const AWSDefaultRate = float64(256)
-
 type S3 struct {
-	Config             *ConfigType
-	Maxreadclients     uint16
-	Maxundeleteclients uint16
-	mu                 *sync.Mutex
-	waitGroup          *sync.WaitGroup
-	RmdeletemarkerC    chan []*s3.DeleteMarkerEntry
-	InputC             chan *s3.ListObjectVersionsInput
-	poolids            map[int]int
-	listFile           *os.File
-	gracefuldown       bool
+	Config       *ConfigType
+	State        *StateStruct
+	gracefuldown bool
+	rtInput      *routines.Routines
+	rtRestore    *routines.Routines
+	rtFixup      *routines.Routines
+	wg           *sync.WaitGroup
 }
 
-func New(config *ConfigType, maxreadclients, maxundeleteclients uint16) *S3 {
-	r := S3{
-		Config:             config,
-		mu:                 &sync.Mutex{},
-		waitGroup:          &sync.WaitGroup{},
-		Maxreadclients:     maxreadclients,
-		Maxundeleteclients: maxundeleteclients,
-		InputC:             make(chan *s3.ListObjectVersionsInput, 4096),
-		RmdeletemarkerC:    make(chan []*s3.DeleteMarkerEntry, 4096),
-		poolids:            map[int]int{},
+func NewS3client(config *ConfigType, state *StateStruct) *S3 {
+	s := &S3{
+		Config:    config,
+		State:     state,
+		rtInput:   routines.New("input", 64, 20, 2048),
+		rtRestore: routines.New("restore", 64, 256, 2048),
+		rtFixup:   routines.New("fixup", 32, 4, 2048),
+		wg:        &sync.WaitGroup{},
 	}
-	return &r
+	return s
 }
 
-func (r *S3) ProcessDeleteMarkers(prefixes []string, starttime, endtime time.Time) {
-	// Scan Functions
-	readLogVersionFunc := func(output *s3.ListObjectVersionsOutput, run bool) bool {
-		entries := []*logVersionEntry{}
-		entries = appendObjectVersionEntries("audit", entries, output.Versions)
-		entries = appendDeleteMarkerEntries("audit", entries, output.DeleteMarkers)
-		logVersions(entries, r.waitGroup)
-		return true
+func (s *S3) ScanPrefix(prefix string) error {
+	if s.gracefuldown {
+		return nil
 	}
-	readFunc := func(output *s3.ListObjectVersionsOutput, run bool) bool {
-		markers := []*s3.DeleteMarkerEntry{}
-		logEntries := []*logVersionEntry{}
-		cnt := 0
+	return s.rtInput.AddJob(prefix)
+}
+
+// Kill gracefully shutdowns
+func (s *S3) Kill() {
+	s.rtInput.Kill(false)
+	s.rtFixup.Kill(false)
+	s.Shutdown()
+}
+
+func (s *S3) Shutdown() {
+	s.rtInput.WaitChan()
+	s.rtInput.Close()
+	s.rtInput.Wait()
+	s.rtRestore.WaitChan()
+	s.rtRestore.Close()
+	s.rtRestore.Wait()
+	s.rtFixup.WaitChan()
+	s.rtFixup.Close()
+	s.rtFixup.Wait()
+	s.wg.Wait()
+}
+
+func (s *S3) StartWorkers() {
+	var scanFunc routines.ActionFuncBatch
+	var restoreFunc routines.ActionFuncBatch
+	var fixupFunc routines.ActionFuncBatch
+
+	switch {
+	case s.Config.Restore && s.Config.DryRun:
+		scanFunc = s.scanDryFunc()
+	case s.Config.ListVer:
+		scanFunc = s.scanListVer()
+	case s.Config.Fixup:
+		scanFunc = s.scanFixupFunc()
+		fixupFunc = s.actionFixUp()
+	case s.Config.Restore:
+		scanFunc = s.scanPrefixFunc()
+		restoreFunc = s.actionRmDm()
+	default:
+
+	}
+
+	if scanFunc != nil {
+		if err := s.rtInput.Start(scanFunc); err != nil {
+			log.Panicf("can not start scan function err=\"%v\"", err)
+		}
+	}
+	if restoreFunc != nil {
+		if err := s.rtRestore.Start(restoreFunc); err != nil {
+			log.Panicf("can not start restore function err=\"%v\"", err)
+		}
+	}
+	if fixupFunc != nil {
+		if err := s.rtFixup.Start(fixupFunc); err != nil {
+			log.Panicf("can not start fixup function err=\"%v\"", err)
+		}
+	}
+}
+
+//
+// Restore functions
+//
+
+func (s *S3) standardPrefixScan(s3PageFunc func(output *s3.ListObjectVersionsOutput, run bool) bool) func(id *routines.Id, batch []interface{}) {
+	svc := s.GetClient()
+	scanPrefixFunc := func(id *routines.Id, batch []interface{}) {
+		for _, item := range batch {
+			prefix, ok := item.(string)
+			if !ok {
+				log.Printf("ERROR: Expecting a prefix of type string. skipping")
+				continue
+			}
+			input := &s3.ListObjectVersionsInput{
+				Bucket: aws.String(s.Config.S3bucket),
+				Prefix: aws.String(prefix),
+			}
+			err := svc.ListObjectVersionsPages(
+				input,
+				s3PageFunc,
+			)
+			if err != nil {
+				log.Println(err.Error())
+			}
+		}
+	}
+	return scanPrefixFunc
+}
+
+func (s *S3) scanPrefixFunc() func(id *routines.Id, batch []interface{}) {
+	s3PageFunc := func(output *s3.ListObjectVersionsOutput, run bool) bool {
+		var buf []interface{}
+		logEntries := []*LogVersionEntry{}
 		for _, marker := range output.DeleteMarkers {
-			if !(starttime.Before(*marker.LastModified) && endtime.After(*marker.LastModified) && *marker.IsLatest) {
-				if r.Config.Verbose {
-					logEntries = appendDeleteMarkerEntries("skip", logEntries, []*s3.DeleteMarkerEntry{marker})
+			if !(s.Config.FromDate.Before(*marker.LastModified) && s.Config.ToDate.After(*marker.LastModified) && *marker.IsLatest) {
+				if s.Config.Verbose {
+					logEntries = AppendDeleteMarkerEntries("skip", logEntries, []*s3.DeleteMarkerEntry{marker})
 				}
 				continue
 			}
 
-			markers = append(markers, marker)
-			if r.Config.Verbose {
-				logEntries = appendDeleteMarkerEntries("submit", logEntries, markers)
+			buf = append(buf, marker)
+			if s.Config.Verbose {
+				logEntries = AppendDeleteMarkerEntries("submit", logEntries, []*s3.DeleteMarkerEntry{marker})
 			}
-			cnt++
-			if cnt == 512 {
-				r.WaitAdd(1)
-				r.RmdeletemarkerC <- markers
-				if r.Config.Verbose {
-					logVersions(logEntries, r.waitGroup)
-					logEntries = []*logVersionEntry{}
+			if len(buf) >= 24 {
+				s.rtRestore.AddJob(buf)
+				if s.Config.Verbose {
+					LogVersions(logEntries, s.wg)
+					logEntries = []*LogVersionEntry{}
 				}
-				markers = []*s3.DeleteMarkerEntry{}
+				buf = []interface{}{}
 			}
+
 		}
-		if len(markers) > 0 {
-			r.WaitAdd(1)
-			r.RmdeletemarkerC <- markers
-			if r.Config.Verbose {
-				logVersions(logEntries, r.waitGroup)
-			}
+		if len(buf) > 0 {
+			s.rtRestore.AddJob(buf)
 		}
 		return true
 	}
+	scanPrefixFunc := s.standardPrefixScan(s3PageFunc)
+	return scanPrefixFunc
+}
 
-	// Action Functions
-	nilActionFunc := func(client *s3.S3, bucket string, markers []*s3.DeleteMarkerEntry) {
-	}
-
-	dryRunFunc := func(client *s3.S3, bucket string, markers []*s3.DeleteMarkerEntry) {
-		batchid := genuuid()
-		for _, marker := range markers {
-			log.Printf(
-				"restore status=dryrun batchid=%s pid=%d key=%s version=%s lastmodified=\"%s\"\n",
-				batchid,
-				Pid,
-				*marker.Key,
-				*marker.VersionId,
-				*marker.LastModified,
-			)
-		}
-		return
-	}
-
-	muList := &sync.Mutex{}
-	if r.Config.ListOutput != "" && r.listFile == nil {
-		var err error
-		r.listFile, err = os.OpenFile(r.Config.ListOutput, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Can not open file %s to store bucket list: %v", r.Config.ListOutput, err)
-		}
-		fmt.Fprintf(os.Stderr, "Writing s2 bucket list to %s\n", r.Config.ListOutput)
-	}
-	listFunc := func(client *s3.S3, bucket string, markers []*s3.DeleteMarkerEntry) {
-		batchid := genuuid()
-		muList.Lock()
-		defer muList.Unlock()
-		for _, marker := range markers {
-			listfile := strings.TrimPrefix(*marker.Key, r.Config.S3bucket+"/")
-			if r.listFile != nil {
-				r.listFile.WriteString(listfile + "\n")
-			} else {
-				os.Stdout.WriteString(listfile + "\n")
-			}
-			log.Printf("restore status=list batchid=%s pid=%d key=%s\n", batchid, Pid, *marker.Key)
-		}
-		return
-	}
-
-	restoreFunc := func(client *s3.S3, bucket string, markers []*s3.DeleteMarkerEntry) {
-		if len(markers) == 0 {
-			return
-		}
-		var err error
+func (s *S3) actionRmDm() func(id *routines.Id, batch []interface{}) {
+	client := s.GetClient()
+	removeDmFunc := func(id *routines.Id, batch []interface{}) {
+		batchid := Genuuid()
 		restoreList := []*s3.ObjectIdentifier{}
-		batchid := genuuid()
-		for _, marker := range markers {
+		for _, item := range batch {
+			if len(batch) == 0 {
+				return
+			}
+			marker, ok := item.(*s3.DeleteMarkerEntry)
+			if !ok {
+				log.Printf("ERROR: Expecting type *s3.DeleteMarkerEntry, skipping")
+				continue
+			}
 			obj := s3.ObjectIdentifier{
 				Key:       marker.Key,
 				VersionId: marker.VersionId,
@@ -159,148 +189,263 @@ func (r *S3) ProcessDeleteMarkers(prefixes []string, starttime, endtime time.Tim
 			restoreList = append(restoreList, &obj)
 		}
 		deleteOutputs, err := client.DeleteObjects(&s3.DeleteObjectsInput{
-			Bucket: &bucket,
+			Bucket: &s.Config.S3bucket,
 			Delete: &s3.Delete{
 				Objects: restoreList,
 				Quiet:   aws.Bool(false),
 			},
 		})
-		r.logRestoreResults(err, batchid, deleteOutputs)
+		s.logRestoreResults(err, batchid, deleteOutputs)
 	}
-	var scanFunc func(output *s3.ListObjectVersionsOutput, run bool) bool
-	var actionFunc func(client *s3.S3, bucket string, markers []*s3.DeleteMarkerEntry)
-	switch {
-	case r.Config.Audit:
-		scanFunc = readLogVersionFunc
-		actionFunc = nilActionFunc
-	case r.Config.DryRun:
-		scanFunc = readFunc
-		actionFunc = dryRunFunc
-	case r.Config.RestoreList:
-		scanFunc = readFunc
-		actionFunc = listFunc
-	default:
-		scanFunc = readFunc
-		actionFunc = restoreFunc
-	}
-	r.ListObjectVersionsPool(READPOOL, r.Maxreadclients, scanFunc)
-	r.DeleteMarkerPool(RESTOREPOOL, r.Maxundeleteclients, actionFunc)
-
-	for _, prefix := range prefixes {
-		if prefix == "" {
-			continue
-		}
-		prefix := strings.Join([]string{r.Config.Stack, "/", prefix}, "")
-
-		input := &s3.ListObjectVersionsInput{
-			Bucket: aws.String(r.Config.S3bucket),
-			Prefix: aws.String(prefix),
-		}
-		if r.gracefuldown {
-			r.Wait()
-			if r.listFile != nil {
-				r.listFile.Close()
-			}
-			return
-		}
-		r.WaitAdd(1)
-		r.InputC <- input
-		if r.Config.Verbose || r.Config.Audit {
-			log.Printf("restore status=submit bucket=%s perfix=%s", r.Config.S3bucket, prefix)
-		}
-	}
-
-	r.Wait()
+	return removeDmFunc
 }
 
-func (r *S3) logRestoreResults(err error, batchid string, deleteOutputs *s3.DeleteObjectsOutput) {
-	r.WaitAdd(1)
-	go func() {
-		if err != nil {
-			log.Printf("restore status=err batchid=%s pid=%d msg=\"%v\"", batchid, Pid, err)
-		}
-		if deleteOutputs != nil {
-			for _, marker := range deleteOutputs.Deleted {
-				log.Printf("restore status=ok batchid=%s pid=%d key=%s version=%s\n",
-					batchid, Pid, *marker.Key, *marker.VersionId)
-			}
-			for _, marker := range deleteOutputs.Errors {
-				log.Printf("retore status=fail batchid=%s pid=%d key=%s version=%s error=%v\n",
-					batchid, Pid, *marker.Key, *marker.VersionId, *marker.Message)
-			}
-		}
-	}()
-	r.WaitAdd(-1)
-}
+//
+// Fixup
+//
 
-func (r *S3) Wait() {
-	r.waitGroup.Wait()
-}
-
-func (r *S3) WaitAdd(delta int) {
-	r.waitGroup.Add(delta)
-}
-
-func (r *S3) SetGracefulDown() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.gracefuldown = true
-}
-
-func (s *S3) ListObjectVersionsPool(poolid int, concur uint16, fn func(output *s3.ListObjectVersionsOutput, run bool) bool) {
-	if _, ok := s.poolids[poolid]; ok {
-		return // Pool already created
-	}
-	s.poolids[poolid] = int(concur)
-	for i := uint16(0); i < concur; i++ {
-		go listObjectVersionsWorker(s, fn)
-	}
-}
-
-func listObjectVersionsWorker(s *S3, fn func(output *s3.ListObjectVersionsOutput, run bool) bool) {
+func (s *S3) scanFixupFunc() func(id *routines.Id, batch []interface{}) {
 	svc := s.GetClient()
-	for {
-		input := <-s.InputC
-		err := svc.ListObjectVersionsPages(
-			input,
-			fn,
-		)
-		if err != nil {
-			log.Println(err.Error())
+	s3PageFunc := func(output *s3.ListObjectsOutput, run bool) bool {
+		for _, obj := range output.Contents {
+			if !strings.HasSuffix(*obj.Key, "receipt.json") {
+				continue
+			}
+			s.rtFixup.AddJob(*obj.Key)
 		}
-		s.WaitAdd(-1)
+		return true
 	}
+
+	listReceiptJsons := func(id *routines.Id, batch []interface{}) {
+		for _, item := range batch {
+			prefix, ok := item.(string)
+			if !ok {
+				log.Printf("ERROR: Expecting a prefix of type string. skipping")
+				continue
+			}
+			input := &s3.ListObjectsInput{
+				Bucket: aws.String(s.Config.S3bucket),
+				Prefix: aws.String(prefix),
+			}
+			err := svc.ListObjectsPages(
+				input,
+				s3PageFunc,
+			)
+			if err != nil {
+				log.Println(err.Error())
+			}
+		}
+	}
+
+	return listReceiptJsons
 }
 
-func (r *S3) GetClient() *s3.S3 {
-	svc := s3.New(r.Session())
-	svc.Handlers.Send.PushBack(func(r *request.Request) {
-		AWSRateLimit()
-	})
-	return svc
+func (s *S3) actionFixUp() func(id *routines.Id, batch []interface{}) {
+	svc := s.GetClient()
+	savedir := "/tmp/s2deletemarkers/fixups"
+	bkupprefix := time.Now().Format("20060102150405")
+
+	fixupFunc := func(id *routines.Id, batch []interface{}) {
+		for _, item := range batch {
+			key, ok := item.(string)
+			if !ok {
+				log.Printf("ERROR: Expecting type *s3.ObjectIndentifier, skipping")
+				continue
+			}
+			if !strings.HasSuffix(key, "/receipt.json") {
+				log.Printf("skip fixup key %s is not a 'receipt.json' file", key)
+				continue
+			}
+
+			// Download File
+			fpath := filepath.Join(savedir, key)
+			dpath := filepath.Dir(fpath)
+			err := os.MkdirAll(dpath, os.ModePerm)
+			ChkErr(err, Epanicf)
+			fh, err := os.OpenFile(fpath, os.O_WRONLY|os.O_TRUNC|os.O_CREATE, os.ModePerm)
+			ChkErr(err, Epanicf)
+
+			objInput := &s3.GetObjectInput{
+				Bucket: aws.String(s.Config.S3bucket),
+				Key:    aws.String(key),
+			}
+			output, err := svc.GetObject(objInput)
+			if err != nil {
+				log.Printf("restore action=fixup status=error msg=\"download error\" err=\"%s\"\n", err.Error())
+				continue
+			}
+
+			buf := []byte{}
+			for {
+				b := make([]byte, 4096)
+				n, err := output.Body.Read(b)
+				buf = append(buf, b[0:n]...)
+				if err == io.EOF {
+					break
+				}
+			}
+			output.Body.Close()
+
+			_, err = fh.Write(buf)
+			if err != nil {
+				fh.Close()
+				log.Printf("restore action=fixup status=error msg=\"file error\" err=\"%s\"\n", err.Error())
+				continue
+			}
+
+			err = fh.Close()
+			if err != nil {
+				log.Printf("restore action=fixup status=error msg=\"file error\" err=\"%s\"\n", err.Error())
+				continue
+			}
+
+			//// Backup
+			//bkup := fmt.Sprintf("%s.%s", fpath, bkupprefix)
+			//_, err = Copy(fpath, bkup)
+			//if err != nil {
+			//	log.Printf("restore action=fixup status=error msg=\"file error\" err=\"%s\"\n", err.Error())
+			//	continue
+			//}
+			//log.Printf("restore action=fixup status=info msg=\"created a local backup\" file=%s backup=%s\n", fpath, bkup)
+
+			// Fix file
+			fixed, err := s.FixupReceiptJsonHash(fpath)
+			if err != nil {
+				continue
+			}
+
+			// Upload
+			if fixed {
+				backup := strings.Join([]string{key, bkupprefix}, ".")
+				log.Printf("restore action=fixup status=info msg=\"creating a remote backup\" backup=%s", backup)
+				err := s.BackUpKeyS3(svc, key, backup)
+				if err != nil {
+					log.Printf("restore action=fixup status=error msg=\"can not create a backup of %s, skipping restore\": %v", key, err)
+					continue
+				}
+				err = s.UploadToS3(svc, fpath, key)
+				if err == nil {
+					log.Printf("restore action=fixup status=ok msg=\"uploaded to s3\" key=%s file=%s", key, fpath)
+				} else {
+					log.Printf("restore action=fixup status=error msg=\"error uploading to s3\" err=\"%s\" key=%s file=%s", err.Error(), key, fpath)
+				}
+			}
+		}
+	}
+	return fixupFunc
 }
 
-func (s *S3) DeleteMarkerPool(poolid int, routines uint16, fn func(*s3.S3, string, []*s3.DeleteMarkerEntry)) {
-	if _, ok := s.poolids[poolid]; ok {
-		return // Pool already created
+func (s *S3) FixupReceiptJsonHash(fpath string) (bool, error) {
+	fixed := false
+	rcpt := receipt.New(fpath)
+	if !rcpt.HashesMatch() {
+		log.Printf("restore action=fixup hash=invalid msg=\"invalid hash, fixing\" file=%s", fpath)
+		_, err := rcpt.ZeroFrozenInCluster(true)
+		if err != nil {
+			return fixed, err
+		} else {
+			fixed = true
+			log.Printf("restore action=fixup hash=fixed msg=\"staging fixed hash file\" file=%s", fpath)
+			return fixed, nil
+		}
 	}
-	s.poolids[poolid] = int(routines)
-	for i := uint16(0); i < routines; i++ {
-		go deleteMarkerWorker(s, fn)
-	}
+	return fixed, nil
 }
 
-func deleteMarkerWorker(s *S3, fn func(*s3.S3, string, []*s3.DeleteMarkerEntry)) {
-	client := s.GetClient()
-	for {
-		marker := <-s.RmdeletemarkerC
-		fn(client, s.Config.S3bucket, marker)
-		s.WaitAdd(-1)
+//
+// Dry functions
+//
+
+func (s *S3) scanDryFunc() func(id *routines.Id, batch []interface{}) {
+	s3PageFunc := func(output *s3.ListObjectVersionsOutput, run bool) bool {
+		batchid := Genuuid()
+		for _, marker := range output.DeleteMarkers {
+			if !(s.Config.FromDate.Before(*marker.LastModified) && s.Config.ToDate.After(*marker.LastModified) && *marker.IsLatest) {
+				continue
+			}
+			log.Printf(
+				"restore action=dryrun status=ok batchid=%s pid=%d key=%s version=%s lastmodified=\"%s\"\n",
+				batchid, State.Pid(), *marker.Key, *marker.VersionId, *marker.LastModified,
+			)
+		}
+		return true
 	}
+	scanPrefixFunc := s.standardPrefixScan(s3PageFunc)
+	return scanPrefixFunc
 }
 
-func (r *S3) Session() *session.Session {
-	region := r.Config.GetBucketRegion()
+//
+// ListVer functions
+//
+
+func (s *S3) scanListVer() func(id *routines.Id, batch []interface{}) {
+	muList := &sync.Mutex{}
+	var listFile *os.File
+	var err error
+	if s.Config.ListOutput != "" {
+		listFile, err = os.OpenFile(s.Config.ListOutput, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Can not open file %s to store bucket list: %v", s.Config.ListOutput, err)
+		}
+		fmt.Fprintf(os.Stderr, "Writing s2 bucket list to %s\n", s.Config.ListOutput)
+	}
+	s3PageFunc := func(output *s3.ListObjectVersionsOutput, run bool) bool {
+		muList.Lock()
+		defer muList.Unlock()
+		for _, ver := range output.Versions {
+			if !(s.Config.FromDate.Before(*ver.LastModified) && s.Config.ToDate.After(*ver.LastModified) && *ver.IsLatest) {
+				continue
+			}
+			output := fmt.Sprintf("key=%s version=%s latest=%t deletemarker=false", *ver.Key, *ver.VersionId, *ver.IsLatest)
+			if listFile != nil {
+				listFile.WriteString(output + "\n")
+			} else {
+				os.Stdout.WriteString(output + "\n")
+			}
+		}
+		for _, dm := range output.DeleteMarkers {
+			if !(s.Config.FromDate.Before(*dm.LastModified) && s.Config.ToDate.After(*dm.LastModified) && *dm.IsLatest) {
+				continue
+			}
+			output := fmt.Sprintf("key=%s version=%s latest=%t deletemarker=true", *dm.Key, *dm.VersionId, *dm.IsLatest)
+			if listFile != nil {
+				listFile.WriteString(output + "\n")
+			} else {
+				os.Stdout.WriteString(output + "\n")
+			}
+		}
+		return true
+	}
+	scanPrefixFunc := s.standardPrefixScan(s3PageFunc)
+	return scanPrefixFunc
+}
+
+//
+// Fixup
+//
+
+//
+// Audit functions
+//
+
+func (s *S3) scanAuditFunc() func(id *routines.Id, batch []interface{}) {
+	s3AuditPageFunc := func(output *s3.ListObjectVersionsOutput, run bool) bool {
+		entries := []*LogVersionEntry{}
+		entries = AppendObjectVersionEntries("audit", entries, output.Versions)
+		entries = AppendDeleteMarkerEntries("audit", entries, output.DeleteMarkers)
+		LogVersions(entries, s.wg)
+		return true
+	}
+	scanPrefixFunc := s.standardPrefixScan(s3AuditPageFunc)
+	return scanPrefixFunc
+}
+
+//
+// S3 Client/Session
+//
+
+func (s *S3) Session() *session.Session {
+	region := s.Config.GetBucketRegion()
 	config := &aws.Config{
 		Region: aws.String(region),
 	}
@@ -308,38 +453,80 @@ func (r *S3) Session() *session.Session {
 	return sess
 }
 
-func (r *S3) End() {
-	if r.listFile != nil {
-		r.listFile.Close()
-	}
+func (s *S3) GetClient() *s3.S3 {
+	svc := s3.New(s.Session())
+	svc.Handlers.Send.PushBack(func(r *request.Request) {
+		AWSRateLimit()
+	})
+	return svc
 }
 
-func AWSRateLimit() {
-	if AWSRate != nil {
-		err := AWSRate.Wait(context.TODO())
+func (r *S3) GracefulShutdown() {
+	r.gracefuldown = true
+	r.Kill()
+}
+
+//
+// Logging
+//
+
+func (s *S3) logRestoreResults(err error, batchid string, deleteOutputs *s3.DeleteObjectsOutput) {
+	s.wg.Add(1)
+	go func() {
 		if err != nil {
-			log.Println(err.Error())
+			log.Printf("restore status=error batchid=%s pid=%d msg=\"%v\"", batchid, State.Pid(), err)
 		}
-	}
+		if deleteOutputs != nil {
+			for _, marker := range deleteOutputs.Deleted {
+				log.Printf("restore status=ok batchid=%s pid=%d key=%s versionid=%s\n",
+					batchid, State.Pid(), *marker.Key, *marker.VersionId)
+			}
+			for _, marker := range deleteOutputs.Errors {
+				log.Printf("retore status=fail batchid=%s pid=%d key=%s versionid=%s error=%v\n",
+					batchid, State.Pid(), *marker.Key, *marker.VersionId, *marker.Message)
+			}
+		}
+		s.wg.Add(-1)
+	}()
 }
 
-func SetupAWSRateLimit(defaultrate float64) {
-	if AWSRate == nil {
-		var l float64
-		switch {
-		case Config.RateLimit < 0:
-			AWSRate = nil
-		case Config.RateLimit == 0:
-			l = defaultrate
-		default:
-			l = Config.RateLimit
-		}
-		AWSRate = rate.NewLimiter(rate.Limit(l), 512)
+func (s *S3) BackUpKeyS3(svc *s3.S3, src, backup string) error {
+	copysrc := filepath.Join("/", s.Config.S3bucket, src)
+	input := &s3.CopyObjectInput{
+		Bucket:     aws.String(s.Config.S3bucket),
+		CopySource: aws.String(copysrc),
+		Key:        aws.String(backup),
 	}
+	_, err := svc.CopyObject(input)
+	return err
 }
 
-func genuuid() string {
-	rand.Seed(time.Now().UnixNano())
-	u := uuid.New()
-	return u.String()
+// UploadToS3 will upload a single file to S3, it will require a pre-built aws session
+// and will set file info like content type and encryption on the uploaded file.
+func (s *S3) UploadToS3(svc *s3.S3, fileDir, key string) error {
+	// Open the file for use
+	file, err := os.Open(fileDir)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	// Get file size and read the file content into a buffer
+	fileInfo, _ := file.Stat()
+	var size int64 = fileInfo.Size()
+	buffer := make([]byte, size)
+	file.Read(buffer)
+
+	// Config settings: this is where you choose the bucket, filename, content-type etc.
+	// of the file you're uploading.
+	_, err = svc.PutObject(&s3.PutObjectInput{
+		Bucket: aws.String(s.Config.S3bucket),
+		Key:    aws.String(key),
+		Body:   bytes.NewReader(buffer),
+		//ContentLength: aws.Int64(size),
+		//ContentType:          aws.String(http.DetectContentType(buffer)),
+		//ContentDisposition:   aws.String("attachment"),
+		//ServerSideEncryption: aws.String("AES256"),
+	})
+	return err
 }

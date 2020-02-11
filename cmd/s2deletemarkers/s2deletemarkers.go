@@ -9,7 +9,7 @@ import (
 
 func main() {
 	args := os.Args
-	runner := internal.GetUsage(args[1:])
+	runner := internal.GetUsage(args[1:], internal.Version)
 	trapC := trapSignals()
 	runner.Run(trapC)
 }

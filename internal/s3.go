@@ -82,6 +82,9 @@ func (s *S3) StartWorkers() {
 		fixupFunc = s.actionFixUp()
 	case s.Config.Restore:
 		scanFunc = s.scanPrefixFunc()
+		if s.Config.ZeroFrozen {
+			fixupFunc = s.actionFixUp()
+		}
 		restoreFunc = s.actionRmDm()
 	default:
 
@@ -196,6 +199,14 @@ func (s *S3) actionRmDm() func(id *routines.Id, batch []interface{}) {
 			},
 		})
 		s.logRestoreResults(err, batchid, deleteOutputs)
+		// Reset frozen_in_cluster to 0
+		if s.Config.ZeroFrozen {
+			for _, obj := range deleteOutputs.Deleted {
+				if strings.HasSuffix(*obj.Key, "receipt.json") {
+					s.rtFixup.AddJob(*obj.Key)
+				}
+			}
+		}
 	}
 	return removeDmFunc
 }
@@ -271,7 +282,7 @@ func (s *S3) actionFixUp() func(id *routines.Id, batch []interface{}) {
 			}
 			output, err := svc.GetObject(objInput)
 			if err != nil {
-				log.Printf("restore action=fixup status=error msg=\"download error\" err=\"%s\"\n", err.Error())
+				log.Printf("restore action=fixup pid=%d status=error msg=\"download error\" err=\"%s\"\n", s.State.Pid(), err.Error())
 				continue
 			}
 
@@ -289,45 +300,42 @@ func (s *S3) actionFixUp() func(id *routines.Id, batch []interface{}) {
 			_, err = fh.Write(buf)
 			if err != nil {
 				fh.Close()
-				log.Printf("restore action=fixup status=error msg=\"file error\" err=\"%s\"\n", err.Error())
+				log.Printf("restore action=fixup pid=%d status=error msg=\"file error\" err=\"%s\"\n", s.State.Pid(), err.Error())
 				continue
 			}
 
 			err = fh.Close()
 			if err != nil {
-				log.Printf("restore action=fixup status=error msg=\"file error\" err=\"%s\"\n", err.Error())
+				log.Printf("restore action=fixup pid=%d status=error msg=\"file error\" err=\"%s\"\n", s.State.Pid(), err.Error())
 				continue
 			}
 
-			//// Backup
-			//bkup := fmt.Sprintf("%s.%s", fpath, bkupprefix)
-			//_, err = Copy(fpath, bkup)
-			//if err != nil {
-			//	log.Printf("restore action=fixup status=error msg=\"file error\" err=\"%s\"\n", err.Error())
-			//	continue
-			//}
-			//log.Printf("restore action=fixup status=info msg=\"created a local backup\" file=%s backup=%s\n", fpath, bkup)
-
 			// Fix file
-			fixed, err := s.FixupReceiptJsonHash(fpath)
+			var fixed bool
+			if s.Config.ZeroFrozen {
+				fixed, err = s.ResetFrozenInCluster(fpath)
+			} else {
+				fixed, err = s.FixupReceiptJsonHash(fpath)
+			}
 			if err != nil {
+				log.Printf("restore action=fixup pid=%d status=err msg=\"error reseting frozen in cluster\"", s.State.Pid())
 				continue
 			}
 
 			// Upload
 			if fixed {
 				backup := strings.Join([]string{key, bkupprefix}, ".")
-				log.Printf("restore action=fixup status=info msg=\"creating a remote backup\" backup=%s", backup)
+				log.Printf("restore action=fixup pid=%d status=info msg=\"creating a remote backup\" backup=%s", s.State.Pid(), backup)
 				err := s.BackUpKeyS3(svc, key, backup)
 				if err != nil {
-					log.Printf("restore action=fixup status=error msg=\"can not create a backup of %s, skipping restore\": %v", key, err)
+					log.Printf("restore action=fixup pid=%d status=error msg=\"can not create a backup of %s, skipping restore\": %v", s.State.Pid(), key, err)
 					continue
 				}
 				err = s.UploadToS3(svc, fpath, key)
 				if err == nil {
-					log.Printf("restore action=fixup status=ok msg=\"uploaded to s3\" key=%s file=%s", key, fpath)
+					log.Printf("restore action=fixup pid=%d status=ok msg=\"uploaded to s3\" key=%s file=%s", s.State.Pid(), key, fpath)
 				} else {
-					log.Printf("restore action=fixup status=error msg=\"error uploading to s3\" err=\"%s\" key=%s file=%s", err.Error(), key, fpath)
+					log.Printf("restore action=fixup pid=%d status=error msg=\"error uploading to s3\" err=\"%s\" key=%s file=%s", s.State.Pid(), err.Error(), key, fpath)
 				}
 			}
 		}
@@ -335,17 +343,31 @@ func (s *S3) actionFixUp() func(id *routines.Id, batch []interface{}) {
 	return fixupFunc
 }
 
+func (s *S3) ResetFrozenInCluster(fpath string) (bool, error) {
+	rcpt := receipt.New(fpath)
+	if rcpt.CheckFrozenInCluster() {
+		_, err := rcpt.ZeroFrozenInCluster(true)
+		if err != nil {
+			log.Printf("restore action=resetfrozenincluster pid=%d msg=\"error setting frozen_in_cluster to 0\": %v", s.State.Pid(), err)
+			return false, err
+		}
+		log.Printf("restore action=resetfrozenincluster pid=%d msg=\"reset frozen_in_cluster to 0\"", s.State.Pid())
+		return true, nil
+	}
+	return false, nil
+}
+
 func (s *S3) FixupReceiptJsonHash(fpath string) (bool, error) {
 	fixed := false
 	rcpt := receipt.New(fpath)
 	if !rcpt.HashesMatch() {
-		log.Printf("restore action=fixup hash=invalid msg=\"invalid hash, fixing\" file=%s", fpath)
+		log.Printf("restore action=fixup pid=%d hash=invalid msg=\"invalid hash, fixing\" file=%s", s.State.Pid(), fpath)
 		_, err := rcpt.ZeroFrozenInCluster(true)
 		if err != nil {
 			return fixed, err
 		} else {
 			fixed = true
-			log.Printf("restore action=fixup hash=fixed msg=\"staging fixed hash file\" file=%s", fpath)
+			log.Printf("restore action=fixup pid=%d hash=fixed msg=\"staging fixed hash file\" file=%s", s.State.Pid(), fpath)
 			return fixed, nil
 		}
 	}
@@ -523,10 +545,6 @@ func (s *S3) UploadToS3(svc *s3.S3, fileDir, key string) error {
 		Bucket: aws.String(s.Config.S3bucket),
 		Key:    aws.String(key),
 		Body:   bytes.NewReader(buffer),
-		//ContentLength: aws.Int64(size),
-		//ContentType:          aws.String(http.DetectContentType(buffer)),
-		//ContentDisposition:   aws.String("attachment"),
-		//ServerSideEncryption: aws.String("AES256"),
 	})
 	return err
 }

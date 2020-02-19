@@ -12,10 +12,10 @@ import (
 var Usage = `Remove Smart Store S3 delete markers
 
 Usage:
-    s2deletemarkers restore [--dryrun] [--verbose] [--log=<logfile>] [--logsyslog] [--rate=<actions>] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> <stack> <prefixes>...
-    s2deletemarkers restore [--dryrun] [--verbose] [--log=<logfile>] [--logsyslog] [--rate=<actions>] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> --prefixfile=<prefixfile> <stack>
-    s2deletemarkers fixup [--log=<logfile>] [--logsyslog] [--rate=<actions>] --s3bucket=<s3bucket> <stack> <prefixes>...
-    s2deletemarkers fixup [--log=<logfile>] [--logsyslog] [--rate=<actions>] --s3bucket=<s3bucket> --prefixfile=<prefixfile> <stack>
+    s2deletemarkers restore [--dryrun] [--verbose] [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--zerofrozen] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> <stack> <prefixes>...
+    s2deletemarkers restore [--dryrun] [--verbose] [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--zerofrozen] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> --prefixfile=<prefixfile> <stack>
+    s2deletemarkers fixup [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--zerofrozen] --s3bucket=<s3bucket> <stack> <prefixes>...
+    s2deletemarkers fixup [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--zerofrozen] --s3bucket=<s3bucket> --prefixfile=<prefixfile> <stack>
     s2deletemarkers listver [--log=<logfile>] [--logsyslog] [--rate=<actions] [--output=<listfile>] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> <stack> <prefixes>...
     s2deletemarkers listver [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--output=<listfile>] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> --prefixfile=<prefixfile> <stack>
     s2deletemarkers --dateformat
@@ -29,6 +29,7 @@ Options:
     -e --end=<edate>              End date
     -l --output=<listfile>        Write bucket list to <listfile>
     -r --region=<region>          Set AWS Region
+    -z --zerofrozen               Set frozen_in_cluster to 0 which forces Splunk to reprocess buckets that were previously frozen
     -p --prefixfile=<prefixfile>  Load prefixes from a file
     <prefixes>                    list of prefixes (E.G. index names or full paths)
                                   Note that the Stack name is pre-pended to each prefix
@@ -42,23 +43,24 @@ Options:
 
 type OptUsage struct {
 	Audit      bool     `docopt:"audit"`
+	Fixup      bool     `docopt:"fixup"`
+	Restore    bool     `docopt:"restore"`
+	ListVer    bool     `docopt:"listver"`
+	Stack      string   `docopt:"<stack>"`
+	PrefixList []string `docopt:"<prefixes>"`
 	Continue   bool     `docopt:"--continue"`
 	Datehelp   bool     `docopt:"--dateformat"`
 	DryRun     bool     `docopt:"--dryrun"`
-	Fixup      bool     `docopt:"fixup"`
 	Fromdate   string   `docopt:"--start"`
 	ListOutput string   `docopt:"--output"`
 	Logfile    string   `docopt:"--log"`
 	PrefixFile string   `docopt:"--prefixfile"`
-	PrefixList []string `docopt:"<prefixes>"`
 	RateLimit  float64  `docopt:"--rate"`
-	Restore    bool     `docopt:"restore"`
-	ListVer    bool     `docopt:"listver"`
 	S3bucket   string   `docopt:"--s3bucket"`
-	Stack      string   `docopt:"<stack>"`
 	Syslog     bool     `docopt:"--logsyslog"`
 	Todate     string   `docopt:"--end"`
-	Verbose    bool     `dcopt:"--verbose"`
+	Verbose    bool     `docopt:"--verbose"`
+	ZeroFrozen bool     `docopt:"--zerofrozen"`
 }
 
 func GetUsage(args []string, version string) *Runner {

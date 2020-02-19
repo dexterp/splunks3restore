@@ -16,6 +16,7 @@ import (
 var chash1 = regexp.MustCompile(`"content_hash":\s*"([^"]+)"\s*,`)
 var chash2 = regexp.MustCompile(`,\s*"content_hash":\s*"([^"]+)"`)
 var nochash1 = regexp.MustCompile(`("cipher_blob":"[^"]+")(,?)`)
+var checkfrozen = regexp.MustCompile(`"frozen_in_cluster":(\s*)"1"`)
 
 type ReceiptJson struct {
 	Path           string
@@ -36,28 +37,40 @@ func (r *ReceiptJson) HashesMatch() bool {
 	return r.matched
 }
 
+// CheckFrozenInCluster checks to see if frozen_in_cluster has been set to 1
+func (r *ReceiptJson) CheckFrozenInCluster() bool {
+	matched := false
+	scanner := func(buf []byte) {
+		m := checkfrozen.Match(buf)
+		if m {
+			matched = m
+		}
+	}
+	scan(r.Path, scanner)
+	return matched
+}
+
 // ZeroFrozenInCluster sets the value frozen_in_cluster to 0. Returns path to receipt file.
 //
 // If update is true it will replace the existing file.
 func (r *ReceiptJson) ZeroFrozenInCluster(update bool) (string, error) {
 	var newpath string
 	r.mu.Lock()
-	regex1 := regexp.MustCompile(`"frozen_in_cluster":(\s*)"1"`)
 	f, err := ioutil.TempFile("/tmp", "resetfrozen-*-receipt.json")
 	if err != nil {
 		return "", err
 	}
 	newpath = f.Name()
 	scanner := func(buf []byte) {
-		matches := regex1.FindSubmatch(buf)
+		matches := checkfrozen.FindSubmatch(buf)
 		if len(matches) == 2 {
 			newsetting := fmt.Sprintf(`"frozen_in_cluster":%s"0"`, matches[1])
-			buf = regex1.ReplaceAll(buf, []byte(newsetting))
+			buf = checkfrozen.ReplaceAll(buf, []byte(newsetting))
 		}
 
 		_, err := f.Write(buf)
 		if err != nil {
-			log.Printf("restore sta")
+			log.Printf("restore status=error: %v", err)
 		}
 	}
 	scan(r.Path, scanner)

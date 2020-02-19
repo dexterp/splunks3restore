@@ -102,7 +102,7 @@ func (r *Runner) runRecovery(force bool) {
 	r.iterMain()
 	r.s3Client.Shutdown()
 
-	log.Printf("restore aciton=%s status=end pid=%d\n", action, r.State.Pid())
+	log.Printf("restore action=%s status=end pid=%d\n", action, r.State.Pid())
 	Exit(0)
 }
 
@@ -115,7 +115,7 @@ func (r *Runner) runFixup(force bool) {
 	r.iterMain()
 	r.s3Client.Shutdown()
 
-	log.Printf("restore aciton=fixup status=end pid=%d\n", r.State.Pid())
+	log.Printf("restore action=fixup status=end pid=%d\n", r.State.Pid())
 	Exit(0)
 }
 

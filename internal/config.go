@@ -35,6 +35,7 @@ type ConfigType struct {
 	ListVer         bool
 	Syslog          bool
 	Verbose         bool
+	ZeroFrozen      bool
 	RateLimit       float64
 }
 
@@ -65,6 +66,7 @@ func (c *ConfigType) Load(opts *OptUsage) {
 	c.Stack = opts.Stack
 	c.ToDate = to
 	c.Verbose = opts.Verbose
+	c.ZeroFrozen = opts.ZeroFrozen
 }
 
 func (c *ConfigType) GetBucketRegion() string {

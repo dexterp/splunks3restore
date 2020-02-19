@@ -49,7 +49,7 @@ func LogDefault(c *ConfigType) {
 	logfile := logName()
 	td := os.Getenv("TMPDIR")
 	if td == "" {
-		td = "/tempdir"
+		td = "/tmp"
 	}
 	logfile = path.Join(td, logfile)
 	file, err := os.OpenFile(logfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)

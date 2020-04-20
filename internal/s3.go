@@ -2,13 +2,13 @@ package internal
 
 import (
 	"bytes"
-	"cd.splunkdev.com/dplameras/s2deletemarkers/internal/receipt"
-	"cd.splunkdev.com/dplameras/s2deletemarkers/internal/routines"
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/crosseyed/splunks3restore/internal/receipt"
+	"github.com/crosseyed/splunks3restore/internal/routines"
 	"io"
 	"log"
 	"os"
@@ -253,7 +253,7 @@ func (s *S3) scanFixupFunc() func(id *routines.Id, batch []interface{}) {
 
 func (s *S3) actionFixUp() func(id *routines.Id, batch []interface{}) {
 	svc := s.GetClient()
-	savedir := "/tmp/s2deletemarkers/fixups"
+	savedir := "/tmp/splunks3restore/fixups"
 	bkupprefix := time.Now().Format("20060102150405")
 
 	fixupFunc := func(id *routines.Id, batch []interface{}) {

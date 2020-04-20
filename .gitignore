@@ -26,5 +26,5 @@
 /tmp/
 /test/fixtures/testdata/testdata
 /vendor/
-/s2deletemarkers
+/splunks3restore
 /.cache

@@ -51,7 +51,7 @@ func (r *Runner) SetupLogging() {
 	case r.Config.LogFile != "":
 		LogToFile(r.Config.LogFile)
 	case r.Config.Syslog:
-		LogToSyslog("s2deletemarkers")
+		LogToSyslog("splunks3restore")
 	default:
 		LogDefault(r.Config)
 	}

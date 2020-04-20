@@ -126,7 +126,7 @@ func (s *StateStruct) TempDir() string {
 	if tmpdir == "" {
 		tmpdir = "/tmp"
 	}
-	dir, err := ioutil.TempDir(tmpdir, "s2deletemarkers")
+	dir, err := ioutil.TempDir(tmpdir, "splunks3restore")
 	if err != nil {
 		log.Print(err)
 		Exit(-1)

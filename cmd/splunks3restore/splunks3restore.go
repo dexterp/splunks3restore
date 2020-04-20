@@ -1,7 +1,7 @@
 package main
 
 import (
-	"cd.splunkdev.com/dplameras/s2deletemarkers/internal"
+	"github.com/crosseyed/splunks3restore/internal"
 	"os"
 	"os/signal"
 	"syscall"

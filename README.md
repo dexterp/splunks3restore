@@ -1,4 +1,4 @@
-# s2deletemarkers
+# splunks3restore
 
 A command line utility to recover Splunk buckets store in S3
 
@@ -6,7 +6,7 @@ A command line utility to recover Splunk buckets store in S3
 
 This code implements concurrency and is blazing fast.
 The other tools will perform 600 S3 object restores per minute or 10 per
-second, s2deletemarkers is capable of restores of over 1000 objects per
+second, splunks3restore is capable of restores of over 1000 objects per
 second. Note that by default the tool is rate limited to 256 S3 calls
 per second, rate limiting is crolled by the --rate=<rate> flag.
 
@@ -18,27 +18,27 @@ s3deletemarkers scanned and restored 1.5M in under 5 hours.
 
 *Get command line help*
 ```bash
-s2deletemarkers --help
+splunks3restore --help
 ```
 
 *Get dateformat help*
 ```bash
-s2deletemarkers --dateformat
+splunks3restore --dateformat
 ```
 
 # Examples
 
 *Recover _internal and _audit indexes from between 7 & 6 days ago*
 ```bash
-s2deletemarkers restore --s3bucket=s3bucket --start=-7d --end=-6d mystack _internal _audit
+splunks3restore restore --s3bucket=s3bucket --start=-7d --end=-6d mystack _internal _audit
 ```
 
 *Restore buckets from an input list*
 ```bash
-s2deletemarkers restore --s3bucket s3-bucket --start -7d --end now --prefixfile=inputlist.txt stack
+splunks3restore restore --s3bucket s3-bucket --start -7d --end now --prefixfile=inputlist.txt stack
 ```
 
 *Instead of restoring, get a list of Splunk buckets using a prefix file and save to splunkbuckets.txt*
 ```bash
-s2deletemarkers restore --s3bucket s3-bucket --start -7d --end now --list=splunkbuckets.txt --prefixfile=inputlist.txt stack
+splunks3restore restore --s3bucket s3-bucket --start -7d --end now --list=splunkbuckets.txt --prefixfile=inputlist.txt stack
 ```

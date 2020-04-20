@@ -1,7 +1,7 @@
 package simple
 
 import (
-	"cd.splunkdev.com/dplameras/s2deletemarkers/internal/routines"
+	"github.com/crosseyed/splunks3restore/internal/routines"
 	"github.com/google/uuid"
 	"math/rand"
 	"time"

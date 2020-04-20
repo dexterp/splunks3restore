@@ -12,13 +12,13 @@ import (
 var Usage = `Remove Smart Store S3 delete markers
 
 Usage:
-    s2deletemarkers restore [--dryrun] [--verbose] [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--zerofrozen] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> <stack> <prefixes>...
-    s2deletemarkers restore [--dryrun] [--verbose] [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--zerofrozen] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> --prefixfile=<prefixfile> <stack>
-    s2deletemarkers fixup [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--zerofrozen] --s3bucket=<s3bucket> <stack> <prefixes>...
-    s2deletemarkers fixup [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--zerofrozen] --s3bucket=<s3bucket> --prefixfile=<prefixfile> <stack>
-    s2deletemarkers listver [--log=<logfile>] [--logsyslog] [--rate=<actions] [--output=<listfile>] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> <stack> <prefixes>...
-    s2deletemarkers listver [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--output=<listfile>] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> --prefixfile=<prefixfile> <stack>
-    s2deletemarkers --dateformat
+    splunks3restore restore [--dryrun] [--verbose] [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--zerofrozen] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> <stack> <prefixes>...
+    splunks3restore restore [--dryrun] [--verbose] [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--zerofrozen] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> --prefixfile=<prefixfile> <stack>
+    splunks3restore fixup [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--zerofrozen] --s3bucket=<s3bucket> <stack> <prefixes>...
+    splunks3restore fixup [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--zerofrozen] --s3bucket=<s3bucket> --prefixfile=<prefixfile> <stack>
+    splunks3restore listver [--log=<logfile>] [--logsyslog] [--rate=<actions] [--output=<listfile>] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> <stack> <prefixes>...
+    splunks3restore listver [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--output=<listfile>] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> --prefixfile=<prefixfile> <stack>
+    splunks3restore --dateformat
 
 Options:
     -h --help                     Print help

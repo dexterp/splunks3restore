@@ -1,4 +1,4 @@
-module cd.splunkdev.com/dplameras/s2deletemarkers
+module github.com/crosseyed/splunks3restore
 
 go 1.13
 

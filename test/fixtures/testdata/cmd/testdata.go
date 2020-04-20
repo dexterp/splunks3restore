@@ -27,7 +27,7 @@ const STACKNAME = "stacksdeletemarker"
 const SLUNKBUCKETCNT = 10000
 
 func main() {
-	basepath := "/tmp/_s2deletemarkerstest"
+	basepath := "/tmp/_splunks3restoretest"
 	region := "us-west-2"
 	wait = &sync.WaitGroup{}
 	putC = make(chan *s3.PutObjectInput, 256)

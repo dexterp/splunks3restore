@@ -46,7 +46,7 @@ installauto:
 	fswatch -o cmd/* internal/* --one-per-batch | xargs -n1 -I{} bash -c 'echo "make install # $$(date)"; make install; echo'
 
 clean:
-	rm -rf .cache s2deletemarkers dist reports tmp vendor
+	rm -rf .cache splunks3restore dist reports tmp vendor
 
 testsetup:
 	@$(DOTENV) make _test_setup

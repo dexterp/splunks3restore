@@ -45,6 +45,7 @@ func (c *ConfigType) Load(opts *OptUsage) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Unrecognised <todate> format %s", opts.Todate)
 	}
+	c.Verbose = opts.Verbose
 	c.DateHelp = opts.Datehelp
 	c.FromDate = from
 	c.ListVer = opts.ListVer

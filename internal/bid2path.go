@@ -31,6 +31,6 @@ func bid2path(bid string) (path string, err error) {
 	}
 
 	dmtchs := dre.FindAllStringSubmatch(strhsh, -1)
-	pth := strings.Join([]string{idx, "db", dmtchs[0][1], dmtchs[0][2], bkt}, "/")
+	pth := strings.Join([]string{idx, "db", strings.ToUpper(dmtchs[0][1]), strings.ToUpper(dmtchs[0][2]), bkt}, "/")
 	return pth, nil
 }

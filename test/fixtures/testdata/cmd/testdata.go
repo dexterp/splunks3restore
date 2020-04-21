@@ -23,7 +23,7 @@ var putC chan *s3.PutObjectInput
 var wait *sync.WaitGroup
 
 const BUCKETNAME = "undeletemarkerstest2"
-const STACKNAME = "stacksdeletemarker"
+const PATH = "stacksdeletemarker"
 const SLUNKBUCKETCNT = 10000
 
 func main() {
@@ -38,7 +38,7 @@ func main() {
 	sess := Session(region)
 	startUploadRoutines(64, sess)
 	createBucket(sess, BUCKETNAME)
-	uploadDirToS3(BUCKETNAME, basepath, STACKNAME)
+	uploadDirToS3(BUCKETNAME, basepath, PATH)
 }
 
 func Session(region string) *session.Session {
@@ -50,9 +50,15 @@ func Session(region string) *session.Session {
 }
 
 func generateFiles(basepath string, filecount int) {
-	for i := 0; i < filecount; i++ {
-		touchfiles(basepath, gensplunkbucket())
+	fpath := filepath.Join(basepath, "bidlist.txt")
+	write, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		panic(err)
 	}
+	for i := 0; i < filecount; i++ {
+		touchfiles(basepath, gensplunkbucket(write))
+	}
+	write.Close()
 }
 
 func touchfiles(basepath string, files []string) {
@@ -64,10 +70,14 @@ func touchfiles(basepath string, files []string) {
 	}
 }
 
-func gensplunkbucket() []string {
+func gensplunkbucket(outfile *os.File) []string {
+	idx := genindex()
 	bucketid := genuuid()
 	hashdir := hashdirs(bucketid)
-	path := filepath.Join(STACKNAME, genindex(), "db", hashdir, bucketid, "guidSplunk"+bucketid)
+	bid := strings.Join([]string{idx, bucketid}, "~")
+	outfile.WriteString(fmt.Sprintf("%s\n", bid))
+	path := filepath.Join(PATH, idx, "db", hashdir, bucketid, "guidSplunk"+bucketid)
+	fmt.Printf("%s\n", path)
 	files := []string{
 		"1578448903-1578448514-5343359168661492325.tsidx",
 		"Hosts.data",

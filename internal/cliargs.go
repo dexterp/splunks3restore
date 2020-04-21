@@ -12,10 +12,10 @@ import (
 var Usage = `Restore Splunk files stored on S3 
 
 Usage:
-    splunks3restore restore [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--start=<sdate>] [--end=<edate>] --s3bucket=<s3bucket> [--path=<path>] <bucketid>...
-    splunks3restore restore [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--start=<sdate>] [--end=<edate>] --s3bucket=<s3bucket> [--path=<path>] --bucketids=<bucketids>
-    splunks3restore listver [--rate=<actions>] [--start=<sdate>] [--end=<edate>] --s3bucket=<s3bucket> [--path=<path>] <bucketid>...
-    splunks3restore listver [--rate=<actions>] [--start=<sdate>] [--end=<edate>] --s3bucket=<s3bucket> [--path=<path>] --bucketids=<bucketids>
+    splunks3restore restore [--verbose] [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--start=<sdate>] [--end=<edate>] --s3bucket=<s3bucket> [--path=<path>] <bucketid>...
+    splunks3restore restore [--verbose] [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--start=<sdate>] [--end=<edate>] --s3bucket=<s3bucket> [--path=<path>] --bucketids=<bucketids>
+    splunks3restore listver [--verbose] [--rate=<actions>] [--start=<sdate>] [--end=<edate>] --s3bucket=<s3bucket> [--path=<path>] <bucketid>...
+    splunks3restore listver [--verbose] [--rate=<actions>] [--start=<sdate>] [--end=<edate>] --s3bucket=<s3bucket> [--path=<path>] --bucketids=<bucketids>
     splunks3restore --dateformat
 
 Options:
@@ -30,23 +30,25 @@ Options:
                                         0 will set to the default which is 256.
     -s --logsyslog                      Log to syslog
     -l --log=<logfile>                  Log to a logfile
+    --verbose                           Verbose output
     -b --start=<sdate>                  Start date
     -e --end=<edate>                    End date
 `
 
 type OptUsage struct {
-	Restore   bool       `docopt:"restore"`
-	ListVer   bool       `docopt:"listver"`
-	Path      string     `docopt:"--path"`
-	BucketIdsFile string `docopt:"--bucketids"`
-	BucketIds []string   `docopt:"<bucketid>"`
-	Datehelp  bool       `docopt:"--dateformat"`
-	Logfile   string     `docopt:"--log"`
-	RateLimit float64    `docopt:"--rate"`
-	S3bucket  string     `docopt:"--s3bucket"`
-	Syslog    bool       `docopt:"--logsyslog"`
-	Fromdate  string     `docopt:"--start"`
-	Todate    string     `docopt:"--end"`
+	Restore       bool     `docopt:"restore"`
+	ListVer       bool     `docopt:"listver"`
+	Path          string   `docopt:"--path"`
+	BucketIdsFile string   `docopt:"--bucketids"`
+	BucketIds     []string `docopt:"<bucketid>"`
+	Datehelp      bool     `docopt:"--dateformat"`
+	Verbose       bool     `docopt:"--verbose"`
+	Logfile       string   `docopt:"--log"`
+	RateLimit     float64  `docopt:"--rate"`
+	S3bucket      string   `docopt:"--s3bucket"`
+	Syslog        bool     `docopt:"--logsyslog"`
+	Fromdate      string   `docopt:"--start"`
+	Todate        string   `docopt:"--end"`
 }
 
 func GetUsage(args []string, version string) *Runner {

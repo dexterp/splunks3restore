@@ -167,6 +167,9 @@ func (r *Runner) iterFile() {
 			log.Printf("Bucket ID format error: '%v' skipping '%s'", bid, err)
 			continue
 		}
+		if r.Config.Verbose {
+			log.Printf("restore scanning bid=%s prefix=%s pid=%d\n", bid, prefix, r.State.Pid())
+		}
 		if err := r.s3Client.ScanPrefix(prefix); err != nil {
 			log.Printf("exiting error recieved: %v", err)
 		}

@@ -35,7 +35,7 @@ splunks3restore restore --s3bucket=s3bucket --start=-7d --end=-6d mystack _inter
 
 *Restore buckets from an input list*
 ```bash
-splunks3restore restore --s3bucket s3-bucket --start -7d --end now --prefixfile=inputlist.txt stack
+splunks3restore restore --s3bucket s3-bucket --start -7d --end now --bidfile bidfile.txt stack
 ```
 
 *Instead of restoring, get a list of Splunk buckets using a prefix file and save to splunkbuckets.txt*

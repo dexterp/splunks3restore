@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path"
 	"strings"
 	"sync"
 )
@@ -26,7 +27,6 @@ func (r *Runner) Run(trapC <-chan os.Signal) {
 
 	r.runList(false)
 	r.runRecovery(false)
-	r.runFixup(false)
 }
 
 func (r *Runner) Setup() {
@@ -94,9 +94,6 @@ func (r *Runner) runRecovery(force bool) {
 		return
 	}
 	action := "recover"
-	if r.Config.DryRun {
-		action = "dryrun"
-	}
 	log.Printf("restore action=%s status=start pid=%d cli=\"%s\"\n", action, r.State.Pid(), Cli2Sting())
 	r.s3Client.StartWorkers()
 	r.iterMain()
@@ -106,23 +103,10 @@ func (r *Runner) runRecovery(force bool) {
 	Exit(0)
 }
 
-func (r *Runner) runFixup(force bool) {
-	if !r.Config.Fixup && !force {
-		return
-	}
-	log.Printf("restore action=fixup status=start pid=%d cli=\"%s\"\n", r.State.Pid(), Cli2Sting())
-	r.s3Client.StartWorkers()
-	r.iterMain()
-	r.s3Client.Shutdown()
-
-	log.Printf("restore action=fixup status=end pid=%d\n", r.State.Pid())
-	Exit(0)
-}
-
 func (r *Runner) prefixReader() *bufio.Reader {
-	file, err := os.Open(r.Config.PrefixFile)
+	file, err := os.Open(r.Config.BucketIdsFile)
 	if err != nil {
-		log.Printf("Can not open prefix file %s: %v", r.Config.PrefixFile, err)
+		log.Printf("Can not open prefix file %s: %v", r.Config.BucketIdsFile, err)
 		Exit(-1)
 	}
 	reader := bufio.NewReader(file)
@@ -131,19 +115,33 @@ func (r *Runner) prefixReader() *bufio.Reader {
 
 func (r *Runner) iterMain() {
 	switch {
-	case r.Config.PrefixFile != "":
+	case r.Config.BucketIdsFile != "":
 		r.iterFile()
-	case len(r.Config.PrefixList) > 0:
+	case len(r.Config.BucketIds) > 0:
 		r.iterList()
 	}
 }
 
+func bid2prefix(pth string, bid string) (string, error) {
+	itm, err := bid2path(bid)
+	if err != nil {
+		return "", err
+	}
+	prefix := strings.Join([]string{pth, itm}, "/")
+	prefix = path.Clean(prefix)
+	return prefix, nil
+}
+
 func (r *Runner) iterList() {
-	for _, itm := range r.Config.PrefixList {
+	for _, bid := range r.Config.BucketIds {
 		if r.sigTrap != nil {
 			break
 		}
-		prefix := strings.Join([]string{r.Config.Stack, itm}, "/")
+		prefix, err := bid2prefix(r.Config.Path, bid)
+		if err != nil {
+			log.Printf("Bucket ID format error: '%v' skipping '%s'", bid, err)
+			continue
+		}
 		if err := r.s3Client.ScanPrefix(prefix); err != nil {
 			log.Printf("exiting error recieved: %v", err)
 		}
@@ -156,15 +154,19 @@ func (r *Runner) iterFile() {
 		if r.sigTrap != nil {
 			break
 		}
-		itm, err := ioreader.ReadString('\n')
-		itm = strings.Trim(itm, "\n")
+		bid, err := ioreader.ReadString('\n')
+		bid = strings.Trim(bid, "\n")
 		if err != nil && err.Error() == "EOF" {
 			break
 		} else if err != nil {
 			log.Printf("ERROR: %v", err)
 			break
 		}
-		prefix := strings.Join([]string{r.Config.Stack, itm}, "/")
+		prefix, err := bid2prefix(r.Config.Path, bid)
+		if err != nil {
+			log.Printf("Bucket ID format error: '%v' skipping '%s'", bid, err)
+			continue
+		}
 		if err := r.s3Client.ScanPrefix(prefix); err != nil {
 			log.Printf("exiting error recieved: %v", err)
 		}

@@ -9,58 +9,44 @@ import (
 	"strings"
 )
 
-var Usage = `Remove Smart Store S3 delete markers
+var Usage = `Restore Splunk files stored on S3 
 
 Usage:
-    splunks3restore restore [--dryrun] [--verbose] [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--zerofrozen] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> <stack> <prefixes>...
-    splunks3restore restore [--dryrun] [--verbose] [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--zerofrozen] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> --prefixfile=<prefixfile> <stack>
-    splunks3restore fixup [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--zerofrozen] --s3bucket=<s3bucket> <stack> <prefixes>...
-    splunks3restore fixup [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--zerofrozen] --s3bucket=<s3bucket> --prefixfile=<prefixfile> <stack>
-    splunks3restore listver [--log=<logfile>] [--logsyslog] [--rate=<actions] [--output=<listfile>] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> <stack> <prefixes>...
-    splunks3restore listver [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--output=<listfile>] --s3bucket=<s3bucket> --start=<sdate> --end=<edate> --prefixfile=<prefixfile> <stack>
+    splunks3restore restore [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--start=<sdate>] [--end=<edate>] --s3bucket=<s3bucket> [--path=<path>] <bucketid>...
+    splunks3restore restore [--log=<logfile>] [--logsyslog] [--rate=<actions>] [--start=<sdate>] [--end=<edate>] --s3bucket=<s3bucket> [--path=<path>] --bucketids=<bucketids>
+    splunks3restore listver [--rate=<actions>] [--start=<sdate>] [--end=<edate>] --s3bucket=<s3bucket> [--path=<path>] <bucketid>...
+    splunks3restore listver [--rate=<actions>] [--start=<sdate>] [--end=<edate>] --s3bucket=<s3bucket> [--path=<path>] --bucketids=<bucketids>
     splunks3restore --dateformat
 
 Options:
-    -h --help                     Print help
-    -v --version                  Print version
-    -f --dateformat               Print date formats
-    -d --dryrun                   Run in simulation. Log entries will have a status=dryrun.
-    -s --start=<sdate>            Starting date
-    -e --end=<edate>              End date
-    -l --output=<listfile>        Write bucket list to <listfile>
-    -r --region=<region>          Set AWS Region
-    -z --zerofrozen               Set frozen_in_cluster to 0 which forces Splunk to reprocess buckets that were previously frozen
-    -p --prefixfile=<prefixfile>  Load prefixes from a file
-    <prefixes>                    list of prefixes (E.G. index names or full paths)
-                                  Note that the Stack name is pre-pended to each prefix
-    -t --rate=<actions>           Rate limit AWS s3Client calls to <actions> per second.
-                                  -1 will disable rate limiting.
-                                  0 will set to the default which is 256.
-    -u --logsyslog                Log to syslog
-    -x --log=<logfile>            Log to a logfile
-    -b --verbose                  Verbose logs
+    -h --help                           Print help
+    -v --version                        Print version
+    -f --dateformat                     Print help on date formats
+    -b --bucketids=<bucketids>          File containing a list of bucket ids
+    -p --path=<path>                    Optional path to bucket location
+    <bucketid>                          Splunk bucket id(s)
+    -r --rate=<actions>                 Rate limit AWS s3Client calls to <actions> per second.
+                                        -1 will disable rate limiting.
+                                        0 will set to the default which is 256.
+    -s --logsyslog                      Log to syslog
+    -l --log=<logfile>                  Log to a logfile
+    -b --start=<sdate>                  Start date
+    -e --end=<edate>                    End date
 `
 
 type OptUsage struct {
-	Audit      bool     `docopt:"audit"`
-	Fixup      bool     `docopt:"fixup"`
-	Restore    bool     `docopt:"restore"`
-	ListVer    bool     `docopt:"listver"`
-	Stack      string   `docopt:"<stack>"`
-	PrefixList []string `docopt:"<prefixes>"`
-	Continue   bool     `docopt:"--continue"`
-	Datehelp   bool     `docopt:"--dateformat"`
-	DryRun     bool     `docopt:"--dryrun"`
-	Fromdate   string   `docopt:"--start"`
-	ListOutput string   `docopt:"--output"`
-	Logfile    string   `docopt:"--log"`
-	PrefixFile string   `docopt:"--prefixfile"`
-	RateLimit  float64  `docopt:"--rate"`
-	S3bucket   string   `docopt:"--s3bucket"`
-	Syslog     bool     `docopt:"--logsyslog"`
-	Todate     string   `docopt:"--end"`
-	Verbose    bool     `docopt:"--verbose"`
-	ZeroFrozen bool     `docopt:"--zerofrozen"`
+	Restore   bool       `docopt:"restore"`
+	ListVer   bool       `docopt:"listver"`
+	Path      string     `docopt:"--path"`
+	BucketIdsFile string `docopt:"--bucketids"`
+	BucketIds []string   `docopt:"<bucketid>"`
+	Datehelp  bool       `docopt:"--dateformat"`
+	Logfile   string     `docopt:"--log"`
+	RateLimit float64    `docopt:"--rate"`
+	S3bucket  string     `docopt:"--s3bucket"`
+	Syslog    bool       `docopt:"--logsyslog"`
+	Fromdate  string     `docopt:"--start"`
+	Todate    string     `docopt:"--end"`
 }
 
 func GetUsage(args []string, version string) *Runner {

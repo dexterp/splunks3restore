@@ -403,14 +403,6 @@ func (s *S3) scanDryFunc() func(id *routines.Id, batch []interface{}) {
 func (s *S3) scanListVer() func(id *routines.Id, batch []interface{}) {
 	muList := &sync.Mutex{}
 	var listFile *os.File
-	var err error
-	if s.Config.ListOutput != "" {
-		listFile, err = os.OpenFile(s.Config.ListOutput, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Can not open file %s to store bucket list: %v", s.Config.ListOutput, err)
-		}
-		fmt.Fprintf(os.Stderr, "Writing s2 bucket list to %s\n", s.Config.ListOutput)
-	}
 	s3PageFunc := func(output *s3.ListObjectVersionsOutput, run bool) bool {
 		muList.Lock()
 		defer muList.Unlock()

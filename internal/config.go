@@ -18,16 +18,13 @@ var State = StateStruct{}
 type ConfigType struct {
 	FromDate        time.Time
 	ToDate          time.Time
-	ListOutput      string
 	LogFile         string
-	PrefixFile      string
+	BucketIdsFile   string
 	RestoreListFile string
 	S3bucket        string
-	Stack           string
+	Path            string
 	bucketRegion    string
-	PrefixList      []string
-	Audit           bool
-	Continue        bool
+	BucketIds       []string
 	DateHelp        bool
 	DryRun          bool
 	Fixup           bool
@@ -48,25 +45,17 @@ func (c *ConfigType) Load(opts *OptUsage) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Unrecognised <todate> format %s", opts.Todate)
 	}
-	c.Audit = opts.Audit
-	c.Continue = opts.Continue
-	c.Continue = opts.Continue
 	c.DateHelp = opts.Datehelp
-	c.DryRun = opts.DryRun
-	c.Fixup = opts.Fixup
 	c.FromDate = from
 	c.ListVer = opts.ListVer
-	c.ListOutput = opts.ListOutput
 	c.LogFile = opts.Logfile
-	c.PrefixFile = opts.PrefixFile
-	c.PrefixList = opts.PrefixList
+	c.BucketIdsFile = opts.BucketIdsFile
+	c.BucketIds = opts.BucketIds
 	c.RateLimit = opts.RateLimit
 	c.Restore = opts.Restore
 	c.S3bucket = opts.S3bucket
-	c.Stack = opts.Stack
+	c.Path = opts.Path
 	c.ToDate = to
-	c.Verbose = opts.Verbose
-	c.ZeroFrozen = opts.ZeroFrozen
 }
 
 func (c *ConfigType) GetBucketRegion() string {

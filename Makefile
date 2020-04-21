@@ -150,9 +150,9 @@ _test: _test_setup
 	@exit $$(cat reports/exitcode.txt)
 
 _test_setup:
-	mkdir -p tmp
-	mkdir -p reports/html
-	make _test_setup_gitserver 2> /dev/null > /dev/null
+	@mkdir -p tmp
+	@mkdir -p reports/html
+	@make _test_setup_gitserver 2> /dev/null > /dev/null
 	@sync
 
 _test_setup_home:
